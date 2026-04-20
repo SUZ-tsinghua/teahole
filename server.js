@@ -53,9 +53,10 @@ const Q = {
      FROM posts ORDER BY created_at DESC LIMIT ${FEED_LIMIT}`
   ),
   getPost:        db.prepare('SELECT id, pseudonym, title, content, created_at FROM posts WHERE id = ?'),
-  listComments:   db.prepare('SELECT id, pseudonym, content, created_at FROM comments WHERE post_id = ? ORDER BY created_at ASC'),
+  listComments:   db.prepare('SELECT id, parent_id, pseudonym, content, created_at FROM comments WHERE post_id = ? ORDER BY created_at ASC'),
+  getCommentPost: db.prepare('SELECT post_id FROM comments WHERE id = ?'),
   insertPost:     db.prepare('INSERT INTO posts (pseudonym, title, content, created_at) VALUES (?, ?, ?, ?)'),
-  insertComment:  db.prepare('INSERT INTO comments (post_id, pseudonym, content, created_at) VALUES (?, ?, ?, ?)'),
+  insertComment:  db.prepare('INSERT INTO comments (post_id, parent_id, pseudonym, content, created_at) VALUES (?, ?, ?, ?, ?)'),
   deletePost:     db.prepare('DELETE FROM posts WHERE id = ?'),
 };
 
@@ -204,17 +205,26 @@ app.get('/api/posts/:id', requireSession, (req, res) => {
 
 app.post('/api/posts/:id/comments', requireSession, (req, res) => {
   const id = parseId(req, res); if (id == null) return;
-  const { token, content } = req.body || {};
+  const { token, content, parent_id } = req.body || {};
   const resolved = resolveToken(token);
   if (!resolved) return res.status(401).json({ error: '发帖令牌无效或已过期' });
   const c = sanitizeText(content, 5000);
   if (!c) return res.status(400).json({ error: '评论内容不能为空' });
 
+  let parentId = null;
+  if (parent_id != null) {
+    if (!Number.isInteger(parent_id)) return res.status(400).json({ error: '无效的父评论' });
+    const parent = Q.getCommentPost.get(parent_id);
+    if (!parent || parent.post_id !== id) return res.status(400).json({ error: '父评论不属于该帖子' });
+    parentId = parent_id;
+  }
+
   const createdAt = Date.now();
   try {
-    const info = Q.insertComment.run(id, resolved.pseudonym, c, createdAt);
+    const info = Q.insertComment.run(id, parentId, resolved.pseudonym, c, createdAt);
     res.json({
       id: info.lastInsertRowid,
+      parent_id: parentId,
       pseudonym: resolved.pseudonym,
       content: c,
       created_at: createdAt,

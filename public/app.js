@@ -167,8 +167,12 @@ $('#new-token').addEventListener('click', async () => {
 
 function renderPostCard(p) {
   const preview = p.truncated ? p.content + '…' : p.content;
+  const titleRow = el('div', { className: 'post-title-row' }, [
+    el('span', { className: 'id-badge', textContent: `#${p.id}` }),
+    el('span', { className: 'post-title', textContent: p.title }),
+  ]);
   const node = el('div', { className: 'post' }, [
-    el('div', { className: 'post-title', textContent: p.title }),
+    titleRow,
     el('div', { className: 'post-preview', textContent: preview }),
     metaLine(p.pseudonym, p.created_at),
   ]);
@@ -188,6 +192,7 @@ async function loadFeed() {
   const feed = $('#feed');
   feed.innerHTML = '';
   const rows = await api('GET', '/api/posts');
+  feedPosts = rows;
   if (!rows.length) {
     feed.appendChild(el('div', { className: 'feed-empty', textContent: '还没有帖子。做第一个发帖的人吧。' }));
     return;
@@ -218,6 +223,7 @@ $('#post-form').addEventListener('submit', async (e) => {
     const feed = $('#feed');
     const emptyMsg = feed.querySelector('.feed-empty');
     if (emptyMsg) emptyMsg.remove();
+    feedPosts.unshift(created);
     feed.prepend(renderPostCard(created));
     await openThread(created.id);
   } catch (err) {
@@ -226,27 +232,208 @@ $('#post-form').addEventListener('submit', async (e) => {
 });
 
 let currentThread = null;
+let currentComments = [];
+let currentPostPseudonym = null;
+const MAX_VISUAL_DEPTH = 4;
+const MENTION_RE = /@([a-f0-9]{8})|#(\d{1,10})/g;
+let feedPosts = [];
 
-function renderComment(c) {
-  return el('div', { className: 'comment' }, [
+function knownPseudonyms() {
+  const set = new Set();
+  if (currentPostPseudonym) set.add(currentPostPseudonym);
+  for (const c of currentComments) set.add(c.pseudonym);
+  return [...set];
+}
+
+function flashTarget(node) {
+  if (!node) return;
+  node.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  node.classList.remove('flash');
+  // Force reflow so re-adding the class restarts the animation.
+  void node.offsetWidth;
+  node.classList.add('flash');
+}
+
+function jumpToPseudonym(p) {
+  const comment = $(`.comment[data-pseudonym="${p}"]`);
+  if (comment) { flashTarget(comment); return; }
+  if (p === currentPostPseudonym) flashTarget($('#thread-meta'));
+}
+
+function renderTextWithMentions(text) {
+  const frag = document.createDocumentFragment();
+  MENTION_RE.lastIndex = 0;
+  let last = 0, m;
+  while ((m = MENTION_RE.exec(text))) {
+    if (m.index > last) frag.appendChild(document.createTextNode(text.slice(last, m.index)));
+    if (m[1]) {
+      const p = m[1];
+      const chip = el('a', { className: 'mention', href: '#', textContent: `@${p}` });
+      chip.dataset.pseudonym = p;
+      chip.addEventListener('click', (e) => { e.preventDefault(); jumpToPseudonym(p); });
+      frag.appendChild(chip);
+    } else {
+      const id = parseInt(m[2], 10);
+      const chip = el('a', { className: 'mention post-ref', href: '#', textContent: `#${id}` });
+      chip.dataset.postId = String(id);
+      chip.addEventListener('click', (e) => { e.preventDefault(); openThread(id).catch(() => {}); });
+      frag.appendChild(chip);
+    }
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
+  return frag;
+}
+
+function renderComment(c, depth) {
+  const d = Math.min(depth, MAX_VISUAL_DEPTH);
+  const body = el('div', { className: 'comment-body' });
+  body.appendChild(renderTextWithMentions(c.content));
+  const replyBtn = el('button', { className: 'link-btn', type: 'button', textContent: '回复' });
+  replyBtn.addEventListener('click', () => toggleReplyForm(node, c));
+
+  const actions = el('div', { className: 'comment-actions' }, [replyBtn]);
+  const node = el('div', { className: 'comment' }, [
     metaLine(c.pseudonym, c.created_at),
-    el('div', { className: 'comment-body', textContent: c.content }),
+    body,
+    actions,
   ]);
+  node.dataset.commentId = c.id;
+  node.dataset.pseudonym = c.pseudonym;
+  node.style.setProperty('--depth', d);
+  if (d > 0) node.classList.add('nested');
+  return node;
+}
+
+function toggleReplyForm(parentNode, parent) {
+  const existing = parentNode.querySelector(':scope > .reply-form');
+  if (existing) { existing.remove(); return; }
+  const form = buildReplyForm(parent);
+  parentNode.appendChild(form);
+  const ta = form.querySelector('textarea');
+  // Must attach after the textarea is in the DOM — the popup is inserted as
+  // its next sibling, which needs a parentNode.
+  attachMentionAutocomplete(ta);
+  ta.focus();
+  ta.setSelectionRange(ta.value.length, ta.value.length);
+}
+
+function buildReplyForm(parent) {
+  const ta = el('textarea', {
+    name: 'content', required: true, maxLength: 5000,
+    placeholder: '写下你的回复...',
+    value: `@${parent.pseudonym} `,
+  });
+  const err = el('div', { className: 'err' });
+  const cancel = el('button', { type: 'button', className: 'ghost', textContent: '取消' });
+  cancel.addEventListener('click', () => form.remove());
+  const submit = el('button', { type: 'submit', textContent: '发表回复' });
+  const actions = el('div', { className: 'form-actions' }, [cancel, submit]);
+  const form = el('form', { className: 'inline-form reply-form' }, [ta, actions, err]);
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    err.textContent = '';
+    await submitComment({ parentId: parent.id, content: ta.value, errNode: err, onDone: () => form.remove() });
+  });
+  return form;
+}
+
+async function submitComment({ parentId, content, errNode, onDone }) {
+  if (currentThread == null) return;
+  const t = getToken();
+  if (!t) { errNode.textContent = '请先获取发帖令牌。'; openDialog(); return; }
+  try {
+    const created = await api('POST', `/api/posts/${currentThread}/comments`, {
+      token: t.token, content, parent_id: parentId ?? null,
+    });
+    currentComments.push(created);
+    if (onDone) onDone();
+    const box = $('#comments');
+    const empty = box.querySelector('.empty-comments');
+    if (empty) empty.remove();
+    insertCommentIntoTree(created);
+  } catch (err) {
+    errNode.textContent = err.message;
+  }
+}
+
+function insertCommentIntoTree(c) {
+  const node = renderComment(c, depthOfComment(c));
+  if (c.parent_id == null) {
+    $('#comments').appendChild(node);
+  } else {
+    const parentNode = $(`.comment[data-comment-id="${c.parent_id}"]`);
+    if (parentNode) {
+      const children = ensureChildrenContainer(parentNode);
+      children.appendChild(node);
+    } else {
+      $('#comments').appendChild(node);
+    }
+  }
+  flashTarget(node);
+}
+
+function ensureChildrenContainer(parentNode) {
+  let box = parentNode.querySelector(':scope > .replies');
+  if (!box) {
+    box = el('div', { className: 'replies' });
+    parentNode.appendChild(box);
+  }
+  return box;
+}
+
+function depthOfComment(c) {
+  const byId = new Map(currentComments.map((x) => [x.id, x]));
+  let depth = 0, cur = c;
+  while (cur && cur.parent_id != null && byId.has(cur.parent_id)) {
+    depth++;
+    cur = byId.get(cur.parent_id);
+    if (depth > 50) break;
+  }
+  return depth;
+}
+
+function renderCommentTree(box, comments) {
+  const ids = new Set(comments.map((c) => c.id));
+  const kids = new Map();
+  for (const c of comments) {
+    const key = c.parent_id != null && ids.has(c.parent_id) ? c.parent_id : null;
+    if (!kids.has(key)) kids.set(key, []);
+    kids.get(key).push(c);
+  }
+  const walk = (c, depth, parentNode) => {
+    const node = renderComment(c, depth);
+    parentNode.appendChild(node);
+    const children = kids.get(c.id);
+    if (children) {
+      const container = ensureChildrenContainer(node);
+      for (const k of children) walk(k, depth + 1, container);
+    }
+  };
+  for (const r of kids.get(null) || []) walk(r, 0, box);
 }
 
 async function openThread(id) {
   currentThread = id;
   markActivePost(id);
   const { post, comments } = await api('GET', `/api/posts/${id}`);
-  $('#thread-title').textContent = post.title;
+  currentComments = comments.slice();
+  currentPostPseudonym = post.pseudonym;
+  $('#thread-title').innerHTML = '';
+  $('#thread-title').append(
+    el('span', { className: 'id-badge id-badge--lg', textContent: `#${post.id}` }),
+    el('span', { textContent: post.title }),
+  );
+  $('#thread-meta').dataset.pseudonym = post.pseudonym;
   $('#thread-meta').textContent = fmtMeta(post.pseudonym, post.created_at);
-  $('#thread-body').textContent = post.content;
+  $('#thread-body').innerHTML = '';
+  $('#thread-body').appendChild(renderTextWithMentions(post.content));
   const box = $('#comments');
   box.innerHTML = '';
   if (!comments.length) {
     box.appendChild(el('div', { className: 'empty-comments', textContent: '还没有评论。' }));
   } else {
-    for (const c of comments) box.appendChild(renderComment(c));
+    renderCommentTree(box, comments);
   }
   $('#comment-err').textContent = '';
   $('#comment-form').reset();
@@ -254,25 +441,118 @@ async function openThread(id) {
   readerNode.scrollTo({ top: 0, behavior: 'instant' });
 }
 
-$('#comment-form').addEventListener('submit', async (e) => {
+const mainCommentForm = $('#comment-form');
+attachMentionAutocomplete(mainCommentForm.querySelector('textarea'));
+attachMentionAutocomplete($('#post-form').querySelector('input[name=title]'));
+attachMentionAutocomplete($('#post-form').querySelector('textarea'));
+
+mainCommentForm.addEventListener('submit', async (e) => {
   e.preventDefault();
-  $('#comment-err').textContent = '';
-  if (currentThread == null) return;
-  const t = getToken();
-  if (!t) { $('#comment-err').textContent = '请先获取发帖令牌。'; openDialog(); return; }
-  try {
-    const created = await api('POST', `/api/posts/${currentThread}/comments`, {
-      token: t.token, content: e.target.content.value,
-    });
-    e.target.reset();
-    const box = $('#comments');
-    const empty = box.querySelector('.empty-comments');
-    if (empty) empty.remove();
-    box.appendChild(renderComment(created));
-  } catch (err) {
-    $('#comment-err').textContent = err.message;
-  }
+  const errNode = $('#comment-err');
+  errNode.textContent = '';
+  await submitComment({
+    parentId: null,
+    content: e.target.content.value,
+    errNode,
+    onDone: () => e.target.reset(),
+  });
 });
+
+function attachMentionAutocomplete(textarea) {
+  const pop = el('div', { className: 'mention-pop', hidden: true });
+  textarea.parentNode && textarea.parentNode.insertBefore(pop, textarea.nextSibling);
+  let items = [], active = 0, tokenStart = -1, kind = '@';
+
+  const close = () => { pop.hidden = true; items = []; tokenStart = -1; };
+
+  const matchTrigger = () => {
+    const v = textarea.value;
+    const caret = textarea.selectionStart;
+    for (let i = caret - 1; i >= 0; i--) {
+      const ch = v[i];
+      if (ch === '@' || ch === '#') {
+        const prev = i === 0 ? ' ' : v[i - 1];
+        if (/\s|[,.;:(\[{]/.test(prev) || i === 0) {
+          return { start: i, kind: ch, query: v.slice(i + 1, caret).toLowerCase() };
+        }
+        return null;
+      }
+      if (/\s/.test(ch)) return null;
+    }
+    return null;
+  };
+
+  const render = (q) => {
+    pop.innerHTML = '';
+    if (kind === '@') {
+      items = knownPseudonyms()
+        .filter((p) => p.startsWith(q))
+        .slice(0, 6)
+        .map((p) => ({ value: `@${p}`, label: `@${p}` }));
+    } else {
+      items = feedPosts
+        .filter((p) => !q || String(p.id).startsWith(q) || p.title.toLowerCase().includes(q))
+        .slice(0, 6)
+        .map((p) => ({ value: `#${p.id}`, label: `#${p.id}`, sub: p.title }));
+    }
+    if (!items.length) { pop.hidden = true; return; }
+    active = 0;
+    items.forEach((it, i) => {
+      const row = el('div', { className: 'mention-item' });
+      row.append(el('span', { textContent: it.label }));
+      if (it.sub) row.append(el('span', { className: 'mention-sub', textContent: it.sub }));
+      if (i === active) row.classList.add('active');
+      row.addEventListener('mousedown', (e) => { e.preventDefault(); pick(i); });
+      pop.appendChild(row);
+    });
+    pop.hidden = false;
+  };
+
+  const pick = (i) => {
+    const it = items[i];
+    if (!it || tokenStart < 0) return;
+    const v = textarea.value;
+    const caret = textarea.selectionStart;
+    const before = v.slice(0, tokenStart);
+    const after = v.slice(caret);
+    const insert = `${it.value} `;
+    textarea.value = before + insert + after;
+    const pos = before.length + insert.length;
+    textarea.setSelectionRange(pos, pos);
+    close();
+    textarea.focus();
+  };
+
+  textarea.addEventListener('input', () => {
+    const m = matchTrigger();
+    if (!m) return close();
+    tokenStart = m.start;
+    kind = m.kind;
+    render(m.query);
+  });
+  textarea.addEventListener('keydown', (e) => {
+    if (pop.hidden) return;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      active = (active + 1) % items.length;
+      updateActive();
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      active = (active - 1 + items.length) % items.length;
+      updateActive();
+    } else if (e.key === 'Enter' || e.key === 'Tab') {
+      e.preventDefault();
+      pick(active);
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      close();
+    }
+  });
+  textarea.addEventListener('blur', () => setTimeout(close, 120));
+  const updateActive = () => {
+    [...pop.children].forEach((n, i) => n.classList.toggle('active', i === active));
+  };
+}
 
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
