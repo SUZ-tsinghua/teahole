@@ -5,71 +5,125 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>匿名论坛</title>
 <link rel="stylesheet" href="/style.css">
+<script>
+  (function () {
+    try {
+      var t = localStorage.getItem('anonforum.theme');
+      if (!t) t = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', t);
+    } catch (e) {}
+  })();
+</script>
 </head>
 <body>
 <header>
-  <h1>匿名论坛</h1>
-  <div id="userbar"></div>
+  <div class="brand">
+    <span class="brand-dot"></span>
+    <span>匿名论坛</span>
+    <span class="brand-sub">登录才能看见，发帖不留身份</span>
+  </div>
+  <div class="header-actions">
+    <button id="theme-toggle" class="icon-btn" type="button" aria-label="切换主题" title="切换亮/暗主题">
+      <svg class="sun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="4"/>
+        <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/>
+      </svg>
+      <svg class="moon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+      </svg>
+    </button>
+    <div id="userbar"></div>
+  </div>
 </header>
 
 <main id="app">
-  <section id="auth-view" hidden>
-    <div class="card">
-      <h2>登录</h2>
-      <p class="muted">阅读和发帖都需要登录。帖子本身不会记录你的身份。</p>
+  <section id="auth-view" class="auth" hidden>
+    <div class="auth-card">
+      <h2>欢迎回来</h2>
+      <p class="muted">阅读与发帖都需要登录，但你的发言不会和账号关联。</p>
       <form id="login-form">
         <input name="username" placeholder="用户名" autocomplete="username" required>
         <input name="password" type="password" placeholder="密码" autocomplete="current-password" required>
         <div class="row">
           <button type="submit">登录</button>
-          <button type="button" id="register-btn">注册</button>
+          <button type="button" id="register-btn" class="ghost">注册</button>
         </div>
         <div class="err" id="auth-err"></div>
       </form>
     </div>
   </section>
 
-  <section id="forum-view" hidden>
-    <div class="card">
-      <h2>你的发帖令牌</h2>
-      <p class="muted">
-        这是一个随机生成的发帖令牌。服务器只保存了它的哈希值——并不知道是谁领到了它。
-        请妥善保管；一旦丢失无法找回，只能重新申请（每日次数有限）。
-      </p>
+  <section id="forum-view" class="layout" hidden>
+    <aside class="sidebar">
+      <div class="sidebar-head">
+        <button id="compose-btn" class="compose-btn">
+          <span class="plus">＋</span> 发新帖
+        </button>
+      </div>
+      <div class="sidebar-section-label">动态</div>
+      <div id="feed" class="feed"></div>
+      <div class="sidebar-foot">
+        <button id="token-toggle" class="token-chip" type="button">
+          <span class="dot"></span>
+          <span id="token-chip-text">未领取令牌</span>
+        </button>
+      </div>
+    </aside>
+
+    <section class="reader" id="reader">
+      <div id="empty-view" class="empty">
+        <div class="empty-inner">
+          <div class="empty-mark"></div>
+          <h2>选一个帖子开始阅读</h2>
+          <p class="muted">或点击「发新帖」分享想法。每一次发帖都会用一枚轮换的匿名 ID。</p>
+        </div>
+      </div>
+
+      <article id="thread-view" class="reader-card" hidden>
+        <button class="back" data-close="reader">← 返回</button>
+        <h2 id="thread-title"></h2>
+        <div id="thread-meta" class="meta"></div>
+        <div id="thread-body" class="prose"></div>
+        <h3>评论</h3>
+        <div id="comments"></div>
+        <form id="comment-form" class="inline-form">
+          <textarea name="content" placeholder="写下你的评论..." required maxlength="5000"></textarea>
+          <div class="form-actions">
+            <button type="submit">发表评论</button>
+          </div>
+          <div class="err" id="comment-err"></div>
+        </form>
+      </article>
+
+      <article id="compose-view" class="reader-card" hidden>
+        <button class="back" data-close="reader">← 返回</button>
+        <h2>发新帖</h2>
+        <p class="muted compose-hint">服务器只记录令牌的哈希，无法把帖子和你连起来。</p>
+        <form id="post-form" class="inline-form">
+          <input name="title" placeholder="标题" required maxlength="200">
+          <textarea name="content" placeholder="分享点什么..." required maxlength="10000"></textarea>
+          <div class="form-actions">
+            <button type="submit">匿名发布</button>
+          </div>
+          <div class="err" id="post-err"></div>
+        </form>
+      </article>
+    </section>
+  </section>
+
+  <div id="token-dialog" class="dialog" hidden>
+    <div class="dialog-backdrop" data-close="dialog"></div>
+    <div class="dialog-card">
+      <h2>发帖令牌</h2>
+      <p class="muted">这是一枚随机生成的发帖令牌。服务器只保存哈希，不知道谁领到了它。请妥善保管，丢失只能重新申请（每日次数有限）。</p>
       <div id="token-box"></div>
-      <button id="new-token">获取 / 轮换令牌</button>
+      <div class="row">
+        <button id="new-token">获取 / 轮换令牌</button>
+        <button type="button" class="ghost" data-close="dialog">关闭</button>
+      </div>
       <div class="err" id="token-err"></div>
     </div>
-
-    <div class="card">
-      <h2>发新帖</h2>
-      <form id="post-form">
-        <input name="title" placeholder="标题" required maxlength="200">
-        <textarea name="content" placeholder="分享点什么..." required maxlength="10000"></textarea>
-        <button type="submit">匿名发布</button>
-        <div class="err" id="post-err"></div>
-      </form>
-    </div>
-
-    <div class="card">
-      <h2>动态</h2>
-      <div id="feed"></div>
-    </div>
-
-    <div class="card" id="thread-card" hidden>
-      <h2 id="thread-title"></h2>
-      <div id="thread-meta" class="muted"></div>
-      <div id="thread-body"></div>
-      <h3>评论</h3>
-      <div id="comments"></div>
-      <form id="comment-form">
-        <textarea name="content" placeholder="写下你的评论..." required maxlength="5000"></textarea>
-        <button type="submit">发表评论</button>
-        <div class="err" id="comment-err"></div>
-      </form>
-      <button id="close-thread" class="link">← 返回列表</button>
-    </div>
-  </section>
+  </div>
 </main>
 
 <script src="/app.js"></script>
