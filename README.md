@@ -89,3 +89,54 @@ who posted it.
 - `server.js` — Express app, routes, rotation.
 - `db.js` — SQLite schema.
 - `public/` — single-page frontend.
+
+## Roadmap
+
+Only features that **do not break unlinkability** are in scope. Each one was
+designed so the server can't learn anything about "user ↔ content" that it
+doesn't already know.
+
+### Shipped
+
+- [x] Threaded comments — replies nest under a parent comment via
+      `comments.parent_id` (validated to belong to the same post).
+- [x] `@<pseudonym>` and `#<post-id>` mentions — autocomplete in every
+      textarea/title input, clickable chips that scroll+flash the target or
+      open the referenced thread.
+- [x] Post IDs — every post shows a `#<id>` badge so it's referenceable.
+- [x] Deep-link routing — `/p/<id>` URLs, Back/Forward works, refresh
+      preserves the open thread. The SPA catch-all serves `index.html`
+      regardless of whether `id` exists, so it doesn't leak existence.
+- [x] Markdown rendering — client-side only (bold, italic, code, fenced
+      blocks, links, lists, blockquotes, h1–h3). Raw markdown is stored; no
+      HTML ever reaches the server.
+- [x] Emoji reactions — 6 fixed kinds (👍❤️😂😮😢🎉). One token = one vote
+      per post per kind. Keyed by full `token_hash` with FK cascade from
+      `post_tokens`, so reactions vanish when the token expires. "Did I
+      react?" is tracked client-side in localStorage — the server never
+      returns per-user reaction state.
+
+### Planned (privacy-preserving)
+
+- [ ] **Tags / channels** — posts carry `#tag`s; filter feed by tag. Tags
+      are stored on the post, not per user, so no leak.
+- [ ] **Search** — full-text over post titles/bodies and comment bodies.
+      SQLite FTS5 index; no query logging.
+- [ ] **Edit / delete your own content** — gated on "you still hold the
+      token it was posted with." Natural window is the 24h token lifetime,
+      and the check is a pure token-hash comparison (server still doesn't
+      know who you are).
+- [ ] **Per-token inbox for `@mentions`** — when someone `@`s a pseudonym,
+      stash a pointer under that `token_hash`. The token holder sees a
+      badge on next visit; cascade-purged when the token expires.
+- [ ] **RSS feed (authenticated)** — for users who want to follow without
+      polling. Session-gated; no per-user tailoring.
+
+### Explicitly out of scope (would break the model)
+
+- Email/push notifications across tokens — links your account to your
+  posts.
+- "Posts by this user" pages — only safe within a single token's lifetime
+  (which is already trivially linkable to the caller's own client).
+- Server-side "did I react?" in read endpoints — forces the server to map
+  reads to identities.
