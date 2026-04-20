@@ -70,6 +70,18 @@ function closeReader() {
   currentThread = null;
   markActivePost(null);
   showReader(VIEW.EMPTY);
+  syncUrl(null);
+}
+
+const POST_PATH_RE = /^\/p\/(\d{1,10})$/;
+function postIdFromPath() {
+  const m = POST_PATH_RE.exec(location.pathname);
+  return m ? parseInt(m[1], 10) : null;
+}
+function syncUrl(id) {
+  const target = id == null ? '/' : `/p/${id}`;
+  if (location.pathname === target) return;
+  history.pushState({ postId: id }, '', target);
 }
 
 function renderTokenChip() {
@@ -125,6 +137,8 @@ async function refreshMe() {
     renderTokenChip();
     await loadFeed();
     showReader(VIEW.EMPTY);
+    const initialId = postIdFromPath();
+    if (initialId != null) await openThread(initialId, { pushUrl: false });
   } catch {
     $('#auth-view').hidden = false;
     $('#forum-view').hidden = true;
@@ -413,10 +427,18 @@ function renderCommentTree(box, comments) {
   for (const r of kids.get(null) || []) walk(r, 0, box);
 }
 
-async function openThread(id) {
+async function openThread(id, { pushUrl = true } = {}) {
   currentThread = id;
   markActivePost(id);
-  const { post, comments } = await api('GET', `/api/posts/${id}`);
+  if (pushUrl) syncUrl(id);
+  let data;
+  try {
+    data = await api('GET', `/api/posts/${id}`);
+  } catch (err) {
+    renderMissingThread(id, err.message);
+    return;
+  }
+  const { post, comments } = data;
   currentComments = comments.slice();
   currentPostPseudonym = post.pseudonym;
   $('#thread-title').innerHTML = '';
@@ -440,6 +462,36 @@ async function openThread(id) {
   showReader(VIEW.THREAD);
   readerNode.scrollTo({ top: 0, behavior: 'instant' });
 }
+
+function renderMissingThread(id, message) {
+  currentComments = [];
+  currentPostPseudonym = null;
+  $('#thread-title').innerHTML = '';
+  $('#thread-title').append(
+    el('span', { className: 'id-badge id-badge--lg', textContent: `#${id}` }),
+    el('span', { textContent: '帖子不存在' }),
+  );
+  $('#thread-meta').textContent = '';
+  $('#thread-body').innerHTML = '';
+  $('#thread-body').appendChild(el('p', { className: 'muted', textContent: message || '未找到该帖子。' }));
+  $('#comments').innerHTML = '';
+  $('#comment-err').textContent = '';
+  $('#comment-form').reset();
+  showReader(VIEW.THREAD);
+  readerNode.scrollTo({ top: 0, behavior: 'instant' });
+}
+
+window.addEventListener('popstate', () => {
+  if ($('#forum-view').hidden) return;
+  const id = postIdFromPath();
+  if (id == null) {
+    currentThread = null;
+    markActivePost(null);
+    showReader(VIEW.EMPTY);
+  } else if (id !== currentThread) {
+    openThread(id, { pushUrl: false }).catch(() => {});
+  }
+});
 
 const mainCommentForm = $('#comment-form');
 attachMentionAutocomplete(mainCommentForm.querySelector('textarea'));

@@ -246,6 +246,13 @@ app.delete('/api/posts/:id', requireSession, (req, res) => {
   res.json({ ok: true });
 });
 
+// Deep-link routes. We serve the SPA shell for any /p/<id> — the client
+// fetches /api/posts/:id and renders a "not found" state if needed, so
+// this handler does not leak whether `id` exists.
+app.get('/p/:id(\\d+)', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
 // Purges expired token hashes. Since plaintext was never stored and no
 // user_id was ever attached to a post, this sweep plus the passage of
 // today's calendar boundary is what makes old posts truly unlinkable.
