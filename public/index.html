@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>匿名论坛</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+  <h1>匿名论坛</h1>
+  <div id="userbar"></div>
+</header>
+
+<main id="app">
+  <section id="auth-view" hidden>
+    <div class="card">
+      <h2>登录</h2>
+      <p class="muted">阅读和发帖都需要登录。帖子本身不会记录你的身份。</p>
+      <form id="login-form">
+        <input name="username" placeholder="用户名" autocomplete="username" required>
+        <input name="password" type="password" placeholder="密码" autocomplete="current-password" required>
+        <div class="row">
+          <button type="submit">登录</button>
+          <button type="button" id="register-btn">注册</button>
+        </div>
+        <div class="err" id="auth-err"></div>
+      </form>
+    </div>
+  </section>
+
+  <section id="forum-view" hidden>
+    <div class="card">
+      <h2>你的发帖令牌</h2>
+      <p class="muted">
+        这是一个随机生成的发帖令牌。服务器只保存了它的哈希值——并不知道是谁领到了它。
+        请妥善保管；一旦丢失无法找回，只能重新申请（每日次数有限）。
+      </p>
+      <div id="token-box"></div>
+      <button id="new-token">获取 / 轮换令牌</button>
+      <div class="err" id="token-err"></div>
+    </div>
+
+    <div class="card">
+      <h2>发新帖</h2>
+      <form id="post-form">
+        <input name="title" placeholder="标题" required maxlength="200">
+        <textarea name="content" placeholder="分享点什么..." required maxlength="10000"></textarea>
+        <button type="submit">匿名发布</button>
+        <div class="err" id="post-err"></div>
+      </form>
+    </div>
+
+    <div class="card">
+      <h2>动态</h2>
+      <div id="feed"></div>
+    </div>
+
+    <div class="card" id="thread-card" hidden>
+      <h2 id="thread-title"></h2>
+      <div id="thread-meta" class="muted"></div>
+      <div id="thread-body"></div>
+      <h3>评论</h3>
+      <div id="comments"></div>
+      <form id="comment-form">
+        <textarea name="content" placeholder="写下你的评论..." required maxlength="5000"></textarea>
+        <button type="submit">发表评论</button>
+        <div class="err" id="comment-err"></div>
+      </form>
+      <button id="close-thread" class="link">← 返回列表</button>
+    </div>
+  </section>
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>
