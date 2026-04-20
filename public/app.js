@@ -299,10 +299,142 @@ function renderTextWithMentions(text) {
   return frag;
 }
 
+// Markdown renderer. Purpose-built, no deps. Emits a DocumentFragment built
+// from real DOM nodes — never innerHTML on user content. Plain text runs are
+// passed through renderTextWithMentions so @xxxxxxxx / #<id> chips still bind.
+const SAFE_URL_RE = /^(https?:\/\/|\/p\/\d{1,10}(?:[?#].*)?$)/i;
+function safeUrl(u) { return typeof u === 'string' && SAFE_URL_RE.test(u.trim()) ? u.trim() : null; }
+
+// Inline tokens: code span, bold, italic, link. Emits nodes into parent,
+// routing any leftover text through renderTextWithMentions (which also emits
+// plain text when no mention is found, so this composes cleanly).
+function renderInline(text, parent) {
+  // Scan left-to-right, greedily matching the earliest special token.
+  const push = (s) => { if (s) parent.appendChild(renderTextWithMentions(s)); };
+  let i = 0;
+  while (i < text.length) {
+    const rest = text.slice(i);
+    // Inline code first — its content is opaque (no further markdown inside).
+    let m = /^`([^`\n]+)`/.exec(rest);
+    if (m) { parent.appendChild(el('code', { textContent: m[1] })); i += m[0].length; continue; }
+    // Link: [text](url). Reject unsafe schemes — render as literal text.
+    m = /^\[([^\]\n]+)\]\(([^)\s]+)\)/.exec(rest);
+    if (m) {
+      const url = safeUrl(m[2]);
+      if (url) {
+        const a = el('a', { href: url, rel: 'noopener noreferrer', target: '_blank' });
+        renderInline(m[1], a);
+        parent.appendChild(a);
+      } else {
+        push(m[0]);
+      }
+      i += m[0].length; continue;
+    }
+    // Bold (**x**) before italic (*x*) so ** isn't eaten as two italics.
+    m = /^\*\*([\s\S]+?)\*\*/.exec(rest);
+    if (m && !/\n/.test(m[1])) { const b = el('strong'); renderInline(m[1], b); parent.appendChild(b); i += m[0].length; continue; }
+    m = /^\*([^*\n]+?)\*/.exec(rest);
+    if (m) { const it = el('em'); renderInline(m[1], it); parent.appendChild(it); i += m[0].length; continue; }
+    // Advance to the next potential special char so we batch plain runs.
+    const next = rest.slice(1).search(/[`*\[]/);
+    const chunk = next < 0 ? rest : rest.slice(0, next + 1);
+    push(chunk);
+    i += chunk.length;
+  }
+}
+
+// Render inline content with single-newline -> <br> behaviour.
+function renderInlineWithBreaks(text, parent) {
+  const lines = text.split('\n');
+  lines.forEach((ln, idx) => {
+    renderInline(ln, parent);
+    if (idx < lines.length - 1) parent.appendChild(el('br'));
+  });
+}
+
+function renderMarkdown(text) {
+  const frag = document.createDocumentFragment();
+  if (typeof text !== 'string' || !text) return frag;
+  const lines = text.replace(/\r\n?/g, '\n').split('\n');
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    // Fenced code block.
+    const fence = /^```([A-Za-z0-9_-]*)\s*$/.exec(line);
+    if (fence) {
+      const buf = [];
+      i++;
+      while (i < lines.length && !/^```\s*$/.test(lines[i])) { buf.push(lines[i]); i++; }
+      if (i < lines.length) i++; // consume closing ```
+      const code = el('code', { textContent: buf.join('\n') });
+      if (fence[1]) code.className = `lang-${fence[1]}`;
+      frag.appendChild(el('pre', {}, [code]));
+      continue;
+    }
+    // Blank line separator.
+    if (line.trim() === '') { i++; continue; }
+    // Headers.
+    const h = /^(#{1,3})\s+(.*)$/.exec(line);
+    if (h) {
+      const tag = `h${h[1].length}`;
+      const node = el(tag);
+      renderInline(h[2].trim(), node);
+      frag.appendChild(node);
+      i++;
+      continue;
+    }
+    // Blockquote: consecutive "> " lines joined into one block.
+    if (/^>\s?/.test(line)) {
+      const buf = [];
+      while (i < lines.length && /^>\s?/.test(lines[i])) { buf.push(lines[i].replace(/^>\s?/, '')); i++; }
+      const node = el('blockquote');
+      renderInlineWithBreaks(buf.join('\n'), node);
+      frag.appendChild(node);
+      continue;
+    }
+    // Unordered list.
+    if (/^[-*]\s+/.test(line)) {
+      const ul = el('ul');
+      while (i < lines.length && /^[-*]\s+/.test(lines[i])) {
+        const li = el('li');
+        renderInline(lines[i].replace(/^[-*]\s+/, ''), li);
+        ul.appendChild(li);
+        i++;
+      }
+      frag.appendChild(ul);
+      continue;
+    }
+    // Ordered list.
+    if (/^\d+\.\s+/.test(line)) {
+      const ol = el('ol');
+      while (i < lines.length && /^\d+\.\s+/.test(lines[i])) {
+        const li = el('li');
+        renderInline(lines[i].replace(/^\d+\.\s+/, ''), li);
+        ol.appendChild(li);
+        i++;
+      }
+      frag.appendChild(ol);
+      continue;
+    }
+    // Paragraph: consume until blank line or block-starting line.
+    const buf = [];
+    while (i < lines.length && lines[i].trim() !== '' &&
+           !/^```/.test(lines[i]) && !/^#{1,3}\s+/.test(lines[i]) &&
+           !/^>\s?/.test(lines[i]) && !/^[-*]\s+/.test(lines[i]) &&
+           !/^\d+\.\s+/.test(lines[i])) {
+      buf.push(lines[i]); i++;
+    }
+    const p = el('p');
+    renderInlineWithBreaks(buf.join('\n'), p);
+    frag.appendChild(p);
+  }
+  return frag;
+}
+
 function renderComment(c, depth) {
   const d = Math.min(depth, MAX_VISUAL_DEPTH);
   const body = el('div', { className: 'comment-body' });
-  body.appendChild(renderTextWithMentions(c.content));
+  body.appendChild(renderMarkdown(c.content));
   const replyBtn = el('button', { className: 'link-btn', type: 'button', textContent: '回复' });
   replyBtn.addEventListener('click', () => toggleReplyForm(node, c));
 
@@ -449,7 +581,7 @@ async function openThread(id, { pushUrl = true } = {}) {
   $('#thread-meta').dataset.pseudonym = post.pseudonym;
   $('#thread-meta').textContent = fmtMeta(post.pseudonym, post.created_at);
   $('#thread-body').innerHTML = '';
-  $('#thread-body').appendChild(renderTextWithMentions(post.content));
+  $('#thread-body').appendChild(renderMarkdown(post.content));
   const box = $('#comments');
   box.innerHTML = '';
   if (!comments.length) {
