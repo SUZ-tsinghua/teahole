@@ -1,5 +1,7 @@
 const TOKEN_STORE_KEY = 'anonforum.token';
 const THEME_STORE_KEY = 'anonforum.theme';
+const MY_REACTIONS_KEY = 'anonforum.myReactions';
+const REACTION_KINDS = ['👍', '❤️', '😂', '😮', '😢', '🎉'];
 
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => document.querySelectorAll(s);
@@ -47,6 +49,28 @@ function getToken() {
 }
 function setToken(t) { localStorage.setItem(TOKEN_STORE_KEY, JSON.stringify(t)); }
 function clearToken() { localStorage.removeItem(TOKEN_STORE_KEY); }
+
+// "Did I react?" is a client-only concept: the server never returns per-user
+// reaction state. Keyed by pseudonym so rotating/losing the token drops it.
+function myReactionsFor(pseudonym) {
+  if (!pseudonym) return {};
+  try {
+    const all = JSON.parse(localStorage.getItem(MY_REACTIONS_KEY) || '{}');
+    return all[pseudonym] || {};
+  } catch { return {}; }
+}
+function setMyReaction(pseudonym, postId, kind, on) {
+  if (!pseudonym) return;
+  let all;
+  try { all = JSON.parse(localStorage.getItem(MY_REACTIONS_KEY) || '{}'); }
+  catch { all = {}; }
+  const byPost = all[pseudonym] || (all[pseudonym] = {});
+  const list = byPost[postId] || [];
+  const next = on ? [...new Set([...list, kind])] : list.filter((k) => k !== kind);
+  if (next.length) byPost[postId] = next; else delete byPost[postId];
+  if (!Object.keys(byPost).length) delete all[pseudonym];
+  localStorage.setItem(MY_REACTIONS_KEY, JSON.stringify(all));
+}
 
 function fmtDate(ms) { return new Date(ms).toLocaleString('zh-CN'); }
 function fmtMeta(pseudonym, createdAt) { return `${pseudonym} · ${fmtDate(createdAt)}`; }
@@ -248,6 +272,7 @@ $('#post-form').addEventListener('submit', async (e) => {
 let currentThread = null;
 let currentComments = [];
 let currentPostPseudonym = null;
+let currentReactions = null;
 const MAX_VISUAL_DEPTH = 4;
 const MENTION_RE = /@([a-f0-9]{8})|#(\d{1,10})/g;
 let feedPosts = [];
@@ -559,6 +584,43 @@ function renderCommentTree(box, comments) {
   for (const r of kids.get(null) || []) walk(r, 0, box);
 }
 
+function renderReactions() {
+  const box = $('#reactions');
+  box.innerHTML = '';
+  if (currentThread == null || !currentReactions) return;
+  const t = getToken();
+  const mine = new Set(t ? (myReactionsFor(t.pseudonym)[currentThread] || []) : []);
+  for (const kind of REACTION_KINDS) {
+    const count = currentReactions[kind] || 0;
+    const pill = el('button', { type: 'button', className: 'reaction-pill' });
+    pill.appendChild(el('span', { className: 'reaction-emoji', textContent: kind }));
+    pill.appendChild(el('span', {
+      className: 'reaction-count' + (count === 0 ? ' is-zero' : ''),
+      textContent: String(count),
+    }));
+    if (mine.has(kind)) pill.classList.add('is-mine');
+    pill.addEventListener('click', () => toggleReaction(kind));
+    box.appendChild(pill);
+  }
+}
+
+async function toggleReaction(kind) {
+  if (currentThread == null) return;
+  const t = getToken();
+  if (!t) { openDialog(); return; }
+  const postId = currentThread;
+  const wasMine = (myReactionsFor(t.pseudonym)[postId] || []).includes(kind);
+  try {
+    const r = await api('POST', `/api/posts/${postId}/reactions`, { token: t.token, kind });
+    if (currentThread !== postId) return;
+    currentReactions = r.reactions;
+    setMyReaction(t.pseudonym, postId, kind, !wasMine);
+    renderReactions();
+  } catch (err) {
+    if (/令牌/.test(err.message)) openDialog();
+  }
+}
+
 async function openThread(id, { pushUrl = true } = {}) {
   currentThread = id;
   markActivePost(id);
@@ -570,9 +632,10 @@ async function openThread(id, { pushUrl = true } = {}) {
     renderMissingThread(id, err.message);
     return;
   }
-  const { post, comments } = data;
+  const { post, comments, reactions } = data;
   currentComments = comments.slice();
   currentPostPseudonym = post.pseudonym;
+  currentReactions = reactions || Object.fromEntries(REACTION_KINDS.map((k) => [k, 0]));
   $('#thread-title').innerHTML = '';
   $('#thread-title').append(
     el('span', { className: 'id-badge id-badge--lg', textContent: `#${post.id}` }),
@@ -582,6 +645,7 @@ async function openThread(id, { pushUrl = true } = {}) {
   $('#thread-meta').textContent = fmtMeta(post.pseudonym, post.created_at);
   $('#thread-body').innerHTML = '';
   $('#thread-body').appendChild(renderMarkdown(post.content));
+  renderReactions();
   const box = $('#comments');
   box.innerHTML = '';
   if (!comments.length) {
@@ -598,6 +662,8 @@ async function openThread(id, { pushUrl = true } = {}) {
 function renderMissingThread(id, message) {
   currentComments = [];
   currentPostPseudonym = null;
+  currentReactions = null;
+  $('#reactions').innerHTML = '';
   $('#thread-title').innerHTML = '';
   $('#thread-title').append(
     el('span', { className: 'id-badge id-badge--lg', textContent: `#${id}` }),

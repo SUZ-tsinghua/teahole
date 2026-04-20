@@ -44,6 +44,19 @@ CREATE TABLE IF NOT EXISTS comments (
   FOREIGN KEY (parent_id) REFERENCES comments(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_comments_post ON comments(post_id);
+
+-- Reactions keyed by full token_hash so cascades from post_tokens purge
+-- them automatically when the token expires — no user_id ever stored.
+CREATE TABLE IF NOT EXISTS reactions (
+  post_id INTEGER NOT NULL,
+  token_hash TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (post_id, token_hash, kind),
+  FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE,
+  FOREIGN KEY (token_hash) REFERENCES post_tokens(token_hash) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_reactions_post ON reactions(post_id);
 `);
 
 // Back-fill parent_id on databases created before threading was added.

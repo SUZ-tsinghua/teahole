@@ -58,7 +58,31 @@ const Q = {
   insertPost:     db.prepare('INSERT INTO posts (pseudonym, title, content, created_at) VALUES (?, ?, ?, ?)'),
   insertComment:  db.prepare('INSERT INTO comments (post_id, parent_id, pseudonym, content, created_at) VALUES (?, ?, ?, ?, ?)'),
   deletePost:     db.prepare('DELETE FROM posts WHERE id = ?'),
+  postExists:     db.prepare('SELECT 1 FROM posts WHERE id = ?'),
+  findReaction:   db.prepare('SELECT 1 FROM reactions WHERE post_id = ? AND token_hash = ? AND kind = ?'),
+  insertReaction: db.prepare('INSERT INTO reactions (post_id, token_hash, kind, created_at) VALUES (?, ?, ?, ?)'),
+  deleteReaction: db.prepare('DELETE FROM reactions WHERE post_id = ? AND token_hash = ? AND kind = ?'),
+  countReactions: db.prepare('SELECT kind, COUNT(*) AS n FROM reactions WHERE post_id = ? GROUP BY kind'),
 };
+
+const REACTION_KINDS = ['👍', '❤️', '😂', '😮', '😢', '🎉'];
+const REACTION_KIND_SET = new Set(REACTION_KINDS);
+
+function reactionCountsFor(postId) {
+  const out = Object.fromEntries(REACTION_KINDS.map((k) => [k, 0]));
+  for (const r of Q.countReactions.all(postId)) {
+    if (REACTION_KIND_SET.has(r.kind)) out[r.kind] = r.n;
+  }
+  return out;
+}
+
+const toggleReactionTx = db.transaction((postId, tokenHash, kind) => {
+  if (Q.findReaction.get(postId, tokenHash, kind)) {
+    Q.deleteReaction.run(postId, tokenHash, kind);
+  } else {
+    Q.insertReaction.run(postId, tokenHash, kind, Date.now());
+  }
+});
 
 const claimTokenSlotTx = db.transaction((userId, today) => {
   const row = Q.findUserQuota.get(userId);
@@ -200,7 +224,18 @@ app.get('/api/posts/:id', requireSession, (req, res) => {
   const post = Q.getPost.get(id);
   if (!post) return res.status(404).json({ error: '未找到' });
   const comments = Q.listComments.all(id);
-  res.json({ post, comments });
+  res.json({ post, comments, reactions: reactionCountsFor(id) });
+});
+
+app.post('/api/posts/:id/reactions', requireSession, (req, res) => {
+  const id = parseId(req, res); if (id == null) return;
+  const { token, kind } = req.body || {};
+  const resolved = resolveToken(token);
+  if (!resolved) return res.status(401).json({ error: '发帖令牌无效或已过期' });
+  if (!REACTION_KIND_SET.has(kind)) return res.status(400).json({ error: '不支持的表情' });
+  if (!Q.postExists.get(id)) return res.status(404).json({ error: '未找到' });
+  toggleReactionTx(id, resolved.tokenHash, kind);
+  res.json({ reactions: reactionCountsFor(id) });
 });
 
 app.post('/api/posts/:id/comments', requireSession, (req, res) => {

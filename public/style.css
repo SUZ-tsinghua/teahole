@@ -504,6 +504,45 @@ main#app { height: calc(100vh - var(--nav-h)); overflow: hidden; }
   white-space: pre;
 }
 
+.reactions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 14px 0 4px;
+}
+.reaction-pill {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--fg-dim);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 13px;
+  font-weight: 500;
+  box-shadow: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+.reaction-pill:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent-ring);
+  color: var(--fg);
+}
+.reaction-pill.is-mine {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--fg);
+}
+.reaction-emoji { font-size: 15px; line-height: 1; }
+.reaction-count {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  min-width: 10px;
+  text-align: center;
+}
+.reaction-count.is-zero { color: var(--muted); opacity: 0.6; }
+
 .reader-card h3 {
   font-size: 12px;
   font-weight: 600;
