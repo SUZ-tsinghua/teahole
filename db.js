@@ -145,6 +145,10 @@ if (!postCols.includes('edited_at')) {
 if (!postCols.includes('token_hash')) {
   db.exec('ALTER TABLE posts ADD COLUMN token_hash TEXT');
 }
+if (!postCols.includes('deleted_at')) {
+  db.exec('ALTER TABLE posts ADD COLUMN deleted_at INTEGER');
+}
+db.exec('CREATE INDEX IF NOT EXISTS idx_posts_deleted ON posts(deleted_at)');
 
 // Backfill FTS for pre-existing posts (fresh DB has nothing to do).
 const ftsCount = db.prepare('SELECT count(*) AS n FROM posts_fts').get().n;

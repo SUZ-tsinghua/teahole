@@ -115,7 +115,6 @@ let currentPostTags = [];
 let currentPostOwned = false;
 let feedPosts = [];
 let filterState = { kind: null, value: null };
-let composeMode = { kind: 'new', postId: null };
 let mentionPollTimer = null;
 let lastMentions = [];
 
@@ -382,26 +381,16 @@ $('#search-input').addEventListener('input', () => {
 });
 $('#search-clear').addEventListener('click', clearFilter);
 
-// --- Compose / edit post ---
+// --- Compose post ---
 
-$('#compose-btn').addEventListener('click', () => openCompose({ edit: false }));
+$('#compose-btn').addEventListener('click', openCompose);
 
-function openCompose({ edit = false, post = null }) {
-  composeMode = edit && post ? { kind: 'edit', postId: post.id } : { kind: 'new', postId: null };
+function openCompose() {
   const f = $('#post-form');
   f.reset();
   $('#post-err').textContent = '';
-  $('#compose-title').textContent = edit ? '编辑帖子' : '发新帖';
-  $('#post-submit').textContent = edit ? '保存修改' : '匿名发布';
-  if (edit && post) {
-    f.title.value = post.title;
-    f.content.value = post.content;
-    f.tags.value = (post.tags || []).join(' ');
-  }
-  if (!edit) {
-    currentThread = null;
-    markActivePost(null);
-  }
+  currentThread = null;
+  markActivePost(null);
   showReader(VIEW.COMPOSE);
   f.title.focus();
 }
@@ -419,27 +408,17 @@ $('#post-form').addEventListener('submit', async (e) => {
   const f = e.target;
   const tags = parseTagsInput(f.tags.value);
   try {
-    let created;
-    if (composeMode.kind === 'edit' && composeMode.postId != null) {
-      created = await api('PUT', `/api/posts/${composeMode.postId}`, {
-        token: t.token, title: f.title.value, content: f.content.value, tags,
-      });
-      await openThread(composeMode.postId);
-      loadFeed().catch(() => {});
-      loadTags().catch(() => {});
-    } else {
-      created = await api('POST', '/api/posts', {
-        token: t.token, title: f.title.value, content: f.content.value, tags,
-      });
-      f.reset();
-      const feed = $('#feed');
-      const emptyMsg = feed.querySelector('.feed-empty');
-      if (emptyMsg) emptyMsg.remove();
-      feedPosts.unshift(created);
-      feed.prepend(renderPostCard(created));
-      loadTags().catch(() => {});
-      await openThread(created.id);
-    }
+    const created = await api('POST', '/api/posts', {
+      token: t.token, title: f.title.value, content: f.content.value, tags,
+    });
+    f.reset();
+    const feed = $('#feed');
+    const emptyMsg = feed.querySelector('.feed-empty');
+    if (emptyMsg) emptyMsg.remove();
+    feedPosts.unshift(created);
+    feed.prepend(renderPostCard(created));
+    loadTags().catch(() => {});
+    await openThread(created.id);
   } catch (err) {
     $('#post-err').textContent = err.message;
   }
@@ -486,39 +465,26 @@ function renderThreadActions() {
   box.innerHTML = '';
   if (!currentPostOwned) { box.hidden = true; return; }
   box.hidden = false;
-  const edit = el('button', { type: 'button', className: 'ghost small', textContent: '编辑' });
-  edit.addEventListener('click', () => {
-    openCompose({
-      edit: true,
-      post: {
-        id: currentThread,
-        title: $('#thread-title').lastChild?.textContent || '',
-        content: threadRawContent,
-        tags: currentPostTags,
-      },
-    });
-  });
   const del = el('button', { type: 'button', className: 'ghost small danger', textContent: '删除' });
   del.addEventListener('click', () => deletePost());
-  box.append(edit, del);
+  box.append(del);
 }
-
-let threadRawContent = '';
 
 async function deletePost() {
   if (currentThread == null) return;
-  if (!confirm('删除这个帖子？评论也会一并删除。')) return;
+  if (!confirm('删除这个帖子？正文会被清空，评论仍会保留。')) return;
   const t = getToken();
   if (!t) { openDialog(); return; }
   try {
     await api('DELETE', `/api/posts/${currentThread}`, { token: t.token });
     const gone = currentThread;
-    closeReader();
-    // Remove from feed cache + DOM.
+    // Remove from feed cache + DOM (deleted posts are hidden from the feed).
     feedPosts = feedPosts.filter((p) => p.id !== gone);
     const card = $(`.post[data-post-id="${gone}"]`);
     if (card) card.remove();
     loadTags().catch(() => {});
+    // Reload the thread so the tombstone view renders with comments intact.
+    await openThread(gone, { pushUrl: false });
   } catch (err) {
     alert(err.message);
   }
@@ -536,24 +502,45 @@ async function openThread(id, { pushUrl = true } = {}) {
     return;
   }
   const { post, comments, reactions, tags } = data;
+  const deleted = !!post.deleted_at;
   currentComments = comments.slice();
-  currentPostPseudonym = post.pseudonym;
-  currentPostTags = tags || [];
+  currentPostPseudonym = deleted ? null : post.pseudonym;
+  currentPostTags = deleted ? [] : (tags || []);
   const me = getToken();
-  currentPostOwned = !!(me && me.pseudonym === post.pseudonym);
-  threadRawContent = post.content;
+  currentPostOwned = !deleted && !!(me && me.pseudonym === post.pseudonym);
+
   $('#thread-title').innerHTML = '';
   $('#thread-title').append(
     el('span', { className: 'id-badge id-badge--lg', textContent: `#${post.id}` }),
-    el('span', { textContent: post.title }),
+    el('span', { textContent: deleted ? '[已删除]' : post.title }),
   );
-  $('#thread-meta').dataset.pseudonym = post.pseudonym;
-  $('#thread-meta').textContent = fmtMeta(post.pseudonym, post.created_at, post.edited_at);
+  const meta = $('#thread-meta');
+  meta.innerHTML = '';
+  if (deleted) {
+    delete meta.dataset.pseudonym;
+    meta.textContent = `已删除于 ${fmtDate(post.deleted_at)}`;
+  } else {
+    meta.dataset.pseudonym = post.pseudonym;
+    meta.textContent = fmtMeta(post.pseudonym, post.created_at, post.edited_at);
+  }
   $('#thread-body').innerHTML = '';
-  $('#thread-body').appendChild(renderMarkdown(post.content));
+  if (deleted) {
+    $('#thread-body').appendChild(el('p', {
+      className: 'muted',
+      textContent: '该帖子已被作者删除。评论保留。',
+    }));
+  } else {
+    $('#thread-body').appendChild(renderMarkdown(post.content));
+  }
   renderThreadTags();
   renderThreadActions();
-  renderReactions(reactions || Object.fromEntries(REACTION_KINDS.map((k) => [k, 0])));
+  if (deleted) {
+    $('#reactions').innerHTML = '';
+    $('#reactions').hidden = true;
+  } else {
+    $('#reactions').hidden = false;
+    renderReactions(reactions || Object.fromEntries(REACTION_KINDS.map((k) => [k, 0])));
+  }
   const box = $('#comments');
   box.innerHTML = '';
   if (!comments.length) {
@@ -563,6 +550,7 @@ async function openThread(id, { pushUrl = true } = {}) {
   }
   $('#comment-err').textContent = '';
   $('#comment-form').reset();
+  $('#comment-form').hidden = deleted;
   showReader(VIEW.THREAD);
   readerNode.scrollTo({ top: 0, behavior: 'instant' });
 }
@@ -572,8 +560,9 @@ function renderMissingThread(id, message) {
   currentPostPseudonym = null;
   currentPostTags = [];
   currentPostOwned = false;
-  threadRawContent = '';
   $('#reactions').innerHTML = '';
+  $('#reactions').hidden = false;
+  $('#comment-form').hidden = false;
   $('#thread-tags').innerHTML = '';
   $('#thread-tags').hidden = true;
   $('#thread-actions').innerHTML = '';

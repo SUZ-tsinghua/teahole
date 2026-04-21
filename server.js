@@ -102,7 +102,8 @@ const Q = {
             substr(content, 1, ${PREVIEW_BYTES}) AS content,
             length(content) > ${PREVIEW_BYTES} AS truncated,
             created_at, edited_at
-     FROM posts ORDER BY created_at DESC LIMIT ${FEED_LIMIT}`
+     FROM posts WHERE deleted_at IS NULL
+     ORDER BY created_at DESC LIMIT ${FEED_LIMIT}`
   ),
   listPostsByTag:  db.prepare(
     `SELECT p.id, p.pseudonym, p.title,
@@ -110,26 +111,37 @@ const Q = {
             length(p.content) > ${PREVIEW_BYTES} AS truncated,
             p.created_at, p.edited_at
      FROM posts p JOIN post_tags pt ON pt.post_id = p.id
-     WHERE pt.tag = ?
+     WHERE pt.tag = ? AND p.deleted_at IS NULL
      ORDER BY p.created_at DESC LIMIT ${FEED_LIMIT}`
   ),
   listPostsForRss: db.prepare(
     `SELECT id, pseudonym, title, content, created_at FROM posts
+     WHERE deleted_at IS NULL
      ORDER BY created_at DESC LIMIT ${RSS_LIMIT}`
   ),
-  getPost:         db.prepare('SELECT id, pseudonym, title, content, created_at, edited_at, token_hash FROM posts WHERE id = ?'),
+  getPost:         db.prepare('SELECT id, pseudonym, title, content, created_at, edited_at, deleted_at, token_hash FROM posts WHERE id = ?'),
   listComments:    db.prepare('SELECT id, parent_id, pseudonym, content, created_at, edited_at FROM comments WHERE post_id = ? ORDER BY created_at ASC'),
   getComment:      db.prepare('SELECT id, post_id, pseudonym, content, token_hash FROM comments WHERE id = ?'),
   getCommentPost:  db.prepare('SELECT post_id FROM comments WHERE id = ?'),
   insertPost:      db.prepare('INSERT INTO posts (pseudonym, title, content, created_at, token_hash) VALUES (?, ?, ?, ?, ?)'),
   insertComment:   db.prepare('INSERT INTO comments (post_id, parent_id, pseudonym, content, created_at, token_hash) VALUES (?, ?, ?, ?, ?, ?)'),
-  updatePost:      db.prepare('UPDATE posts SET title = ?, content = ?, edited_at = ? WHERE id = ? AND token_hash IS NOT NULL AND token_hash = ?'),
   updateComment:   db.prepare('UPDATE comments SET content = ?, edited_at = ? WHERE id = ? AND token_hash IS NOT NULL AND token_hash = ?'),
-  deletePost:      db.prepare('DELETE FROM posts WHERE id = ?'),
+  // Post-delete is a tombstone: blank the visible content and set
+  // deleted_at, but leave the row so child comments aren't cascade-deleted.
+  // token_hash is cleared so the post can't be "resurrected" via edit.
+  softDeletePost:  db.prepare(
+    `UPDATE posts SET title = '', content = '', deleted_at = ?, token_hash = NULL
+     WHERE id = ? AND deleted_at IS NULL`
+  ),
+  softDeleteOwnPost: db.prepare(
+    `UPDATE posts SET title = '', content = '', deleted_at = ?, token_hash = NULL
+     WHERE id = ? AND deleted_at IS NULL AND token_hash IS NOT NULL AND token_hash = ?`
+  ),
+  clearReactionsForPost: db.prepare('DELETE FROM reactions WHERE post_id = ?'),
   deleteComment:   db.prepare('DELETE FROM comments WHERE id = ?'),
-  deleteOwnPost:   db.prepare('DELETE FROM posts WHERE id = ? AND token_hash IS NOT NULL AND token_hash = ?'),
   deleteOwnCmt:    db.prepare('DELETE FROM comments WHERE id = ? AND token_hash IS NOT NULL AND token_hash = ?'),
   postExists:      db.prepare('SELECT 1 FROM posts WHERE id = ?'),
+  isPostAlive:     db.prepare('SELECT 1 FROM posts WHERE id = ? AND deleted_at IS NULL'),
   findReaction:    db.prepare('SELECT 1 FROM reactions WHERE post_id = ? AND token_hash = ? AND kind = ?'),
   insertReaction:  db.prepare('INSERT INTO reactions (post_id, token_hash, kind, created_at) VALUES (?, ?, ?, ?)'),
   deleteReaction:  db.prepare('DELETE FROM reactions WHERE post_id = ? AND token_hash = ? AND kind = ?'),
@@ -149,7 +161,7 @@ const Q = {
      FROM mentions m
      JOIN posts p ON p.id = m.post_id
      LEFT JOIN comments c ON c.id = m.comment_id
-     WHERE m.target_pseudonym = ? AND m.created_at > ?
+     WHERE m.target_pseudonym = ? AND m.created_at > ? AND p.deleted_at IS NULL
      ORDER BY m.created_at DESC LIMIT ${MENTIONS_LIMIT}`
   ),
   searchPosts:     db.prepare(
@@ -159,7 +171,7 @@ const Q = {
             p.created_at, p.edited_at,
             bm25(posts_fts) AS rank
      FROM posts_fts JOIN posts p ON p.id = posts_fts.rowid
-     WHERE posts_fts MATCH ?
+     WHERE posts_fts MATCH ? AND p.deleted_at IS NULL
      ORDER BY rank LIMIT ${SEARCH_LIMIT}`
   ),
 };
@@ -516,41 +528,15 @@ app.get('/api/posts/:id', requireSession, (req, res) => {
   });
 });
 
-app.put('/api/posts/:id', requireSession, (req, res) => {
-  const id = parseId(req, res); if (id == null) return;
-  const { token, title, content, tags } = req.body || {};
-  const resolved = resolveToken(token);
-  if (!resolved) return res.status(401).json({ error: '发帖令牌无效或已过期' });
-  const t = sanitizeText(title, 200);
-  const c = sanitizeText(content, 10000);
-  if (!t || !c) return res.status(400).json({ error: '标题和内容不能为空' });
-  const cleanTags = sanitizeTags(tags);
-  if (cleanTags === null) return res.status(400).json({ error: '标签格式错误（最多 5 个，每个 1–24 位 a-z / 0-9 / - / _）' });
-
-  const editedAt = Date.now();
-  const info = Q.updatePost.run(t, c, editedAt, id, resolved.tokenHash);
-  if (info.changes === 0) {
-    const existed = Q.postExists.get(id);
-    return res.status(existed ? 403 : 404).json({ error: existed ? '只有作者可以编辑' : '未找到' });
-  }
-  setPostTagsTx(id, cleanTags);
-  // Edits regenerate the mention pointers for this post.
-  clearMentionsForPost.run(id);
-  recordMentionsForPost(id, c, editedAt);
-
-  res.json({
-    id, pseudonym: resolved.pseudonym, title: t, content: c,
-    truncated: false, created_at: null, edited_at: editedAt, tags: cleanTags,
-  });
-});
-
 app.post('/api/posts/:id/reactions', requireSession, (req, res) => {
   const id = parseId(req, res); if (id == null) return;
   const { token, kind } = req.body || {};
   const resolved = resolveToken(token);
   if (!resolved) return res.status(401).json({ error: '发帖令牌无效或已过期' });
   if (!REACTION_KIND_SET.has(kind)) return res.status(400).json({ error: '不支持的表情' });
-  if (!Q.postExists.get(id)) return res.status(404).json({ error: '未找到' });
+  if (!Q.isPostAlive.get(id)) {
+    return res.status(Q.postExists.get(id) ? 410 : 404).json({ error: '帖子已删除或未找到' });
+  }
   toggleReactionTx(id, resolved.tokenHash, kind);
   res.json({ reactions: reactionCountsFor(id) });
 });
@@ -562,6 +548,9 @@ app.post('/api/posts/:id/comments', requireSession, (req, res) => {
   if (!resolved) return res.status(401).json({ error: '发帖令牌无效或已过期' });
   const c = sanitizeText(content, 5000);
   if (!c) return res.status(400).json({ error: '评论内容不能为空' });
+  if (!Q.isPostAlive.get(id)) {
+    return res.status(Q.postExists.get(id) ? 410 : 404).json({ error: '帖子已删除或未找到' });
+  }
 
   let parentId = null;
   if (parent_id != null) {
@@ -614,21 +603,35 @@ app.put('/api/posts/:pid/comments/:id', requireSession, (req, res) => {
 });
 
 // Author OR admin can delete. Author uses token; admin uses their session.
+// Soft-delete: tombstones the post (blanks title/content, sets deleted_at)
+// while leaving the row so child comments aren't cascade-deleted. Tags,
+// post-level mentions, and reaction rows are cleared.
+function tombstonePost(id) {
+  Q.clearPostTags.run(id);
+  clearMentionsForPost.run(id);
+  Q.clearReactionsForPost.run(id);
+}
+
 app.delete('/api/posts/:id', requireSession, (req, res) => {
   const id = parseId(req, res); if (id == null) return;
   const { token } = req.body || {};
+  const now = Date.now();
   if (req.user.a && isLiveAdmin(req.user.uid)) {
-    const info = Q.deletePost.run(id);
-    if (info.changes === 0) return res.status(404).json({ error: '未找到' });
+    const info = Q.softDeletePost.run(now, id);
+    if (info.changes === 0) {
+      return res.status(Q.postExists.get(id) ? 410 : 404).json({ error: '未找到' });
+    }
+    tombstonePost(id);
     return res.json({ ok: true });
   }
   const resolved = resolveToken(token);
   if (!resolved) return res.status(401).json({ error: '发帖令牌无效或已过期' });
-  const info = Q.deleteOwnPost.run(id, resolved.tokenHash);
+  const info = Q.softDeleteOwnPost.run(now, id, resolved.tokenHash);
   if (info.changes === 0) {
     const existed = Q.postExists.get(id);
     return res.status(existed ? 403 : 404).json({ error: existed ? '只有作者可以删除' : '未找到' });
   }
+  tombstonePost(id);
   res.json({ ok: true });
 });
 
