@@ -1300,6 +1300,44 @@ button.ghost.small.danger:hover { background: var(--danger-soft); color: var(--d
 }
 :root[data-theme="light"] #mentions-pseudo { text-shadow: none; color: var(--magenta); }
 
+/* Warning list inside the rotate-confirm dialog. */
+.warn-list {
+  margin: 0 0 16px;
+  padding: 12px 14px 12px 18px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--amber);
+  border-radius: var(--radius);
+  color: var(--fg-dim);
+  font-size: 12.5px;
+  line-height: 1.6;
+  list-style: none;
+}
+.warn-list li {
+  position: relative;
+  padding-left: 18px;
+  margin: 4px 0;
+}
+.warn-list li::before {
+  content: "!";
+  position: absolute;
+  left: 0;
+  top: 0;
+  color: var(--amber);
+  font-family: var(--mono);
+  font-weight: 700;
+}
+.warn-list strong { color: var(--fg); font-weight: 600; }
+.warn-kw { font-family: var(--mono); color: var(--magenta); }
+
+#confirm-rotate-old-pseudo {
+  font-family: var(--mono);
+  color: var(--accent);
+  font-weight: 600;
+  text-shadow: var(--accent-glow);
+}
+:root[data-theme="light"] #confirm-rotate-old-pseudo { text-shadow: none; color: var(--magenta); }
+
 /* ============================================================
    Markdown rendering (.prose + .comment-body)
    ============================================================ */

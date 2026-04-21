@@ -132,6 +132,24 @@
     </div>
   </div>
 
+  <div id="confirm-rotate-dialog" class="dialog" hidden>
+    <div class="dialog-backdrop" data-close="confirm-rotate"></div>
+    <div class="dialog-card">
+      <h2>轮换令牌？</h2>
+      <p class="muted">这会用掉今天的一枚令牌名额。新匿名 ID 会替换当前的 <span id="confirm-rotate-old-pseudo">—</span>。</p>
+      <ul class="warn-list">
+        <li>你将无法再<strong>删除</strong>用旧令牌发的帖子或<strong>编辑/删除</strong>用旧令牌发的评论。</li>
+        <li>你在旧令牌下对他人帖子的反应（👍/❤️ 等）会保留计数，但<strong>无法再取消</strong>。</li>
+        <li>发往旧匿名 ID 的 <span class="warn-kw">@提醒</span> 将不再出现在你的收件箱里。</li>
+      </ul>
+      <div class="row">
+        <button id="confirm-rotate-yes">确认轮换</button>
+        <button type="button" class="ghost" data-close="confirm-rotate">取消</button>
+      </div>
+      <div class="err" id="confirm-rotate-err"></div>
+    </div>
+  </div>
+
   <div id="mentions-dialog" class="dialog" hidden>
     <div class="dialog-backdrop" data-close="mentions"></div>
     <div class="dialog-card">

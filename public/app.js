@@ -172,6 +172,13 @@ function openDialog() {
 }
 function closeDialog() { $('#token-dialog').hidden = true; }
 function closeMentionsDialog() { $('#mentions-dialog').hidden = true; }
+function openConfirmRotate() {
+  const t = getToken();
+  $('#confirm-rotate-old-pseudo').textContent = t ? t.pseudonym : '—';
+  $('#confirm-rotate-err').textContent = '';
+  $('#confirm-rotate-dialog').hidden = false;
+}
+function closeConfirmRotate() { $('#confirm-rotate-dialog').hidden = true; }
 
 $('#token-toggle').addEventListener('click', openDialog);
 document.addEventListener('click', (e) => {
@@ -180,6 +187,7 @@ document.addEventListener('click', (e) => {
   const kind = t.dataset.close;
   if (kind === 'dialog') closeDialog();
   else if (kind === 'mentions') closeMentionsDialog();
+  else if (kind === 'confirm-rotate') closeConfirmRotate();
   else if (kind === 'reader') closeReader();
 });
 
@@ -234,17 +242,30 @@ async function authSubmit(endpoint) {
 $('#login-form').addEventListener('submit', (e) => { e.preventDefault(); authSubmit('/api/login'); });
 $('#register-btn').addEventListener('click', () => authSubmit('/api/register'));
 
-$('#new-token').addEventListener('click', async () => {
-  $('#token-err').textContent = '';
+async function issueNewToken(errNode) {
+  errNode.textContent = '';
   try {
     const r = await api('POST', '/api/token');
     setToken({ token: r.token, pseudonym: r.pseudonym, expires_at: r.expires_at });
     renderTokenBox();
     renderTokenChip();
     refreshMentions({ silent: true }).catch(() => {});
+    return true;
   } catch (err) {
-    $('#token-err').textContent = err.message;
+    errNode.textContent = err.message;
+    return false;
   }
+}
+
+$('#new-token').addEventListener('click', () => {
+  // First-time issuance has nothing to lose — skip the confirm.
+  if (!getToken()) { issueNewToken($('#token-err')); return; }
+  openConfirmRotate();
+});
+
+$('#confirm-rotate-yes').addEventListener('click', async () => {
+  const ok = await issueNewToken($('#confirm-rotate-err'));
+  if (ok) closeConfirmRotate();
 });
 
 // --- Feed + filters ---
@@ -1162,6 +1183,7 @@ mainCommentForm.addEventListener('submit', async (e) => {
 
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
+  if (!$('#confirm-rotate-dialog').hidden) { closeConfirmRotate(); return; }
   if (!$('#token-dialog').hidden) { closeDialog(); return; }
   if (!$('#mentions-dialog').hidden) { closeMentionsDialog(); return; }
   if (currentView !== VIEW.EMPTY) closeReader();
