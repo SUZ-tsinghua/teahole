@@ -23,13 +23,19 @@ CREATE TABLE IF NOT EXISTS post_tokens (
 );
 CREATE INDEX IF NOT EXISTS idx_post_tokens_expires ON post_tokens(expires_at);
 
--- Posts carry an opaque per-token pseudonym, never a user_id.
+-- Posts carry an opaque per-token pseudonym, never a user_id. The
+-- token_hash column is used ONLY to gate "author can edit/delete" checks;
+-- once the corresponding token row in post_tokens has expired and been
+-- purged, this hash no longer joins to anything — the post is orphaned
+-- from any identity, which is exactly the intended state.
 CREATE TABLE IF NOT EXISTS posts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   pseudonym TEXT NOT NULL,
   title TEXT NOT NULL,
   content TEXT NOT NULL,
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  edited_at INTEGER,
+  token_hash TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_posts_created ON posts(created_at);
 
@@ -40,6 +46,8 @@ CREATE TABLE IF NOT EXISTS comments (
   pseudonym TEXT NOT NULL,
   content TEXT NOT NULL,
   created_at INTEGER NOT NULL,
+  edited_at INTEGER,
+  token_hash TEXT,
   FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE,
   FOREIGN KEY (parent_id) REFERENCES comments(id) ON DELETE CASCADE
 );
@@ -57,20 +65,83 @@ CREATE TABLE IF NOT EXISTS reactions (
   FOREIGN KEY (token_hash) REFERENCES post_tokens(token_hash) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_reactions_post ON reactions(post_id);
+
+-- Tags: normalized lowercase, attached to a post. Stored per-post (not
+-- per-user), so tagging leaks no "who tags what" info.
+CREATE TABLE IF NOT EXISTS post_tags (
+  post_id INTEGER NOT NULL,
+  tag TEXT NOT NULL,
+  PRIMARY KEY (post_id, tag),
+  FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_post_tags_tag ON post_tags(tag);
+
+-- Mentions inbox: keyed by target pseudonym (8 hex chars) because that's
+-- all the sender types. rotate() ages rows out after TOKEN_TTL_HOURS so
+-- stale mentions can't bleed into a new token holder that coincidentally
+-- picks up the same 8-char prefix. FK cascades catch post/comment delete.
+CREATE TABLE IF NOT EXISTS mentions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  target_pseudonym TEXT NOT NULL,
+  post_id INTEGER NOT NULL,
+  comment_id INTEGER,
+  created_at INTEGER NOT NULL,
+  FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE,
+  FOREIGN KEY (comment_id) REFERENCES comments(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_mentions_target ON mentions(target_pseudonym, created_at);
+
+-- FTS5 over post title+content. Trigram tokenizer so CJK works; the
+-- default unicode61 tokenizer won't split Chinese into useful tokens.
+CREATE VIRTUAL TABLE IF NOT EXISTS posts_fts USING fts5(
+  title, content, content='posts', content_rowid='id', tokenize='trigram'
+);
+
+CREATE TRIGGER IF NOT EXISTS posts_ai AFTER INSERT ON posts BEGIN
+  INSERT INTO posts_fts(rowid, title, content) VALUES (new.id, new.title, new.content);
+END;
+CREATE TRIGGER IF NOT EXISTS posts_ad AFTER DELETE ON posts BEGIN
+  INSERT INTO posts_fts(posts_fts, rowid, title, content) VALUES ('delete', old.id, old.title, old.content);
+END;
+CREATE TRIGGER IF NOT EXISTS posts_au AFTER UPDATE ON posts BEGIN
+  INSERT INTO posts_fts(posts_fts, rowid, title, content) VALUES ('delete', old.id, old.title, old.content);
+  INSERT INTO posts_fts(rowid, title, content) VALUES (new.id, new.title, new.content);
+END;
 `);
 
-// Back-fill parent_id on databases created before threading was added.
-// (The CREATE TABLE above is a no-op when the table already exists, so
-// the column has to be added via ALTER. The index must be created after.)
-const hasParentId = db
-  .prepare("PRAGMA table_info(comments)")
-  .all()
-  .some((c) => c.name === 'parent_id');
-if (!hasParentId) {
+// Column-level migrations for pre-existing databases. CREATE TABLE above
+// is a no-op when the table already exists, so new columns have to come
+// in via ALTER. Indexes on new columns must be created AFTER the ALTER.
+const columnsOf = (table) =>
+  db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+
+const commentCols = columnsOf('comments');
+if (!commentCols.includes('parent_id')) {
   db.exec(
     'ALTER TABLE comments ADD COLUMN parent_id INTEGER REFERENCES comments(id) ON DELETE CASCADE'
   );
 }
+if (!commentCols.includes('edited_at')) {
+  db.exec('ALTER TABLE comments ADD COLUMN edited_at INTEGER');
+}
+if (!commentCols.includes('token_hash')) {
+  db.exec('ALTER TABLE comments ADD COLUMN token_hash TEXT');
+}
 db.exec('CREATE INDEX IF NOT EXISTS idx_comments_parent ON comments(parent_id)');
+
+const postCols = columnsOf('posts');
+if (!postCols.includes('edited_at')) {
+  db.exec('ALTER TABLE posts ADD COLUMN edited_at INTEGER');
+}
+if (!postCols.includes('token_hash')) {
+  db.exec('ALTER TABLE posts ADD COLUMN token_hash TEXT');
+}
+
+// Backfill FTS for pre-existing posts (fresh DB has nothing to do).
+const ftsCount = db.prepare('SELECT count(*) AS n FROM posts_fts').get().n;
+const postCount = db.prepare('SELECT count(*) AS n FROM posts').get().n;
+if (ftsCount === 0 && postCount > 0) {
+  db.exec("INSERT INTO posts_fts(posts_fts) VALUES('rebuild')");
+}
 
 module.exports = db;

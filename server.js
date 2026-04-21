@@ -14,6 +14,12 @@ const SESSION_TTL_DAYS = 30;
 const ROTATE_INTERVAL_MS = 10 * 60 * 1000;
 const FEED_LIMIT = 200;
 const PREVIEW_BYTES = 400;
+const SEARCH_LIMIT = 50;
+const SEARCH_MIN_CHARS = 3;
+const MENTIONS_LIMIT = 50;
+const RSS_LIMIT = 50;
+const MAX_TAGS_PER_POST = 5;
+const TAG_RE = /^[a-z0-9_-]{1,24}$/;
 
 const SESSION_COOKIE_OPTS = {
   httpOnly: true,
@@ -37,36 +43,106 @@ app.use(cookieParser());
 app.use(express.static(path.join(__dirname, 'public')));
 
 const Q = {
-  findUserByName: db.prepare('SELECT id, password_hash, is_admin FROM users WHERE username = ?'),
-  usernameExists: db.prepare('SELECT 1 FROM users WHERE username = ?'),
-  insertUser:     db.prepare('INSERT INTO users (username, password_hash, created_at) VALUES (?, ?, ?)'),
-  findUserQuota:  db.prepare('SELECT tokens_issued_date, tokens_issued_count FROM users WHERE id = ?'),
-  bumpTokenCount: db.prepare('UPDATE users SET tokens_issued_date = ?, tokens_issued_count = ? WHERE id = ?'),
-  insertToken:    db.prepare('INSERT INTO post_tokens (token_hash, expires_at) VALUES (?, ?)'),
-  findToken:      db.prepare('SELECT expires_at FROM post_tokens WHERE token_hash = ?'),
-  purgeTokens:    db.prepare('DELETE FROM post_tokens WHERE expires_at < ?'),
-  listPosts:      db.prepare(
+  findUserByName:  db.prepare('SELECT id, password_hash, is_admin FROM users WHERE username = ?'),
+  usernameExists:  db.prepare('SELECT 1 FROM users WHERE username = ?'),
+  insertUser:      db.prepare('INSERT INTO users (username, password_hash, created_at) VALUES (?, ?, ?)'),
+  findUserQuota:   db.prepare('SELECT tokens_issued_date, tokens_issued_count FROM users WHERE id = ?'),
+  bumpTokenCount:  db.prepare('UPDATE users SET tokens_issued_date = ?, tokens_issued_count = ? WHERE id = ?'),
+  insertToken:     db.prepare('INSERT INTO post_tokens (token_hash, expires_at) VALUES (?, ?)'),
+  findToken:       db.prepare('SELECT expires_at FROM post_tokens WHERE token_hash = ?'),
+  purgeTokens:     db.prepare('DELETE FROM post_tokens WHERE expires_at < ?'),
+  purgeMentions:   db.prepare('DELETE FROM mentions WHERE created_at < ?'),
+  // Clear author-edit fingerprints once the token they reference is gone.
+  // Otherwise `posts.token_hash` / `comments.token_hash` outlive the purge
+  // and become a permanent per-author linker in the DB.
+  orphanPostHashes: db.prepare(
+    `UPDATE posts SET token_hash = NULL
+     WHERE token_hash IS NOT NULL
+       AND token_hash NOT IN (SELECT token_hash FROM post_tokens)`
+  ),
+  orphanCmtHashes: db.prepare(
+    `UPDATE comments SET token_hash = NULL
+     WHERE token_hash IS NOT NULL
+       AND token_hash NOT IN (SELECT token_hash FROM post_tokens)`
+  ),
+  listPosts:       db.prepare(
     `SELECT id, pseudonym, title,
             substr(content, 1, ${PREVIEW_BYTES}) AS content,
             length(content) > ${PREVIEW_BYTES} AS truncated,
-            created_at
+            created_at, edited_at
      FROM posts ORDER BY created_at DESC LIMIT ${FEED_LIMIT}`
   ),
-  getPost:        db.prepare('SELECT id, pseudonym, title, content, created_at FROM posts WHERE id = ?'),
-  listComments:   db.prepare('SELECT id, parent_id, pseudonym, content, created_at FROM comments WHERE post_id = ? ORDER BY created_at ASC'),
-  getCommentPost: db.prepare('SELECT post_id FROM comments WHERE id = ?'),
-  insertPost:     db.prepare('INSERT INTO posts (pseudonym, title, content, created_at) VALUES (?, ?, ?, ?)'),
-  insertComment:  db.prepare('INSERT INTO comments (post_id, parent_id, pseudonym, content, created_at) VALUES (?, ?, ?, ?, ?)'),
-  deletePost:     db.prepare('DELETE FROM posts WHERE id = ?'),
-  postExists:     db.prepare('SELECT 1 FROM posts WHERE id = ?'),
-  findReaction:   db.prepare('SELECT 1 FROM reactions WHERE post_id = ? AND token_hash = ? AND kind = ?'),
-  insertReaction: db.prepare('INSERT INTO reactions (post_id, token_hash, kind, created_at) VALUES (?, ?, ?, ?)'),
-  deleteReaction: db.prepare('DELETE FROM reactions WHERE post_id = ? AND token_hash = ? AND kind = ?'),
-  countReactions: db.prepare('SELECT kind, COUNT(*) AS n FROM reactions WHERE post_id = ? GROUP BY kind'),
+  listPostsByTag:  db.prepare(
+    `SELECT p.id, p.pseudonym, p.title,
+            substr(p.content, 1, ${PREVIEW_BYTES}) AS content,
+            length(p.content) > ${PREVIEW_BYTES} AS truncated,
+            p.created_at, p.edited_at
+     FROM posts p JOIN post_tags pt ON pt.post_id = p.id
+     WHERE pt.tag = ?
+     ORDER BY p.created_at DESC LIMIT ${FEED_LIMIT}`
+  ),
+  listPostsForRss: db.prepare(
+    `SELECT id, pseudonym, title, content, created_at FROM posts
+     ORDER BY created_at DESC LIMIT ${RSS_LIMIT}`
+  ),
+  getPost:         db.prepare('SELECT id, pseudonym, title, content, created_at, edited_at, token_hash FROM posts WHERE id = ?'),
+  listComments:    db.prepare('SELECT id, parent_id, pseudonym, content, created_at, edited_at FROM comments WHERE post_id = ? ORDER BY created_at ASC'),
+  getComment:      db.prepare('SELECT id, post_id, pseudonym, content, token_hash FROM comments WHERE id = ?'),
+  getCommentPost:  db.prepare('SELECT post_id FROM comments WHERE id = ?'),
+  insertPost:      db.prepare('INSERT INTO posts (pseudonym, title, content, created_at, token_hash) VALUES (?, ?, ?, ?, ?)'),
+  insertComment:   db.prepare('INSERT INTO comments (post_id, parent_id, pseudonym, content, created_at, token_hash) VALUES (?, ?, ?, ?, ?, ?)'),
+  updatePost:      db.prepare('UPDATE posts SET title = ?, content = ?, edited_at = ? WHERE id = ? AND token_hash IS NOT NULL AND token_hash = ?'),
+  updateComment:   db.prepare('UPDATE comments SET content = ?, edited_at = ? WHERE id = ? AND token_hash IS NOT NULL AND token_hash = ?'),
+  deletePost:      db.prepare('DELETE FROM posts WHERE id = ?'),
+  deleteOwnPost:   db.prepare('DELETE FROM posts WHERE id = ? AND token_hash IS NOT NULL AND token_hash = ?'),
+  deleteOwnCmt:    db.prepare('DELETE FROM comments WHERE id = ? AND token_hash IS NOT NULL AND token_hash = ?'),
+  postExists:      db.prepare('SELECT 1 FROM posts WHERE id = ?'),
+  findReaction:    db.prepare('SELECT 1 FROM reactions WHERE post_id = ? AND token_hash = ? AND kind = ?'),
+  insertReaction:  db.prepare('INSERT INTO reactions (post_id, token_hash, kind, created_at) VALUES (?, ?, ?, ?)'),
+  deleteReaction:  db.prepare('DELETE FROM reactions WHERE post_id = ? AND token_hash = ? AND kind = ?'),
+  countReactions:  db.prepare('SELECT kind, COUNT(*) AS n FROM reactions WHERE post_id = ? GROUP BY kind'),
+  insertPostTag:   db.prepare('INSERT OR IGNORE INTO post_tags (post_id, tag) VALUES (?, ?)'),
+  clearPostTags:   db.prepare('DELETE FROM post_tags WHERE post_id = ?'),
+  listPostTags:    db.prepare('SELECT tag FROM post_tags WHERE post_id = ? ORDER BY tag ASC'),
+  listAllTags:     db.prepare(
+    'SELECT tag, COUNT(*) AS n FROM post_tags GROUP BY tag ORDER BY n DESC, tag ASC'
+  ),
+  insertMention:   db.prepare('INSERT INTO mentions (target_pseudonym, post_id, comment_id, created_at) VALUES (?, ?, ?, ?)'),
+  listMentions:    db.prepare(
+    `SELECT m.id, m.post_id, m.comment_id, m.created_at,
+            p.title AS post_title,
+            COALESCE(c.pseudonym, p.pseudonym) AS sender_pseudonym,
+            substr(COALESCE(c.content, p.content), 1, 200) AS snippet
+     FROM mentions m
+     JOIN posts p ON p.id = m.post_id
+     LEFT JOIN comments c ON c.id = m.comment_id
+     WHERE m.target_pseudonym = ? AND m.created_at > ?
+     ORDER BY m.created_at DESC LIMIT ${MENTIONS_LIMIT}`
+  ),
+  searchPosts:     db.prepare(
+    `SELECT p.id, p.pseudonym, p.title,
+            substr(p.content, 1, ${PREVIEW_BYTES}) AS content,
+            length(p.content) > ${PREVIEW_BYTES} AS truncated,
+            p.created_at, p.edited_at,
+            bm25(posts_fts) AS rank
+     FROM posts_fts JOIN posts p ON p.id = posts_fts.rowid
+     WHERE posts_fts MATCH ?
+     ORDER BY rank LIMIT ${SEARCH_LIMIT}`
+  ),
 };
 
 const REACTION_KINDS = ['👍', '❤️', '😂', '😮', '😢', '🎉'];
 const REACTION_KIND_SET = new Set(REACTION_KINDS);
+const MENTION_IN_CONTENT_RE = /@([a-f0-9]{8})/g;
+
+function extractMentionTargets(text) {
+  if (typeof text !== 'string') return [];
+  const set = new Set();
+  let m;
+  MENTION_IN_CONTENT_RE.lastIndex = 0;
+  while ((m = MENTION_IN_CONTENT_RE.exec(text))) set.add(m[1]);
+  return [...set];
+}
 
 function reactionCountsFor(postId) {
   const out = Object.fromEntries(REACTION_KINDS.map((k) => [k, 0]));
@@ -74,6 +150,25 @@ function reactionCountsFor(postId) {
     if (REACTION_KIND_SET.has(r.kind)) out[r.kind] = r.n;
   }
   return out;
+}
+
+function tagsFor(postId) {
+  return Q.listPostTags.all(postId).map((r) => r.tag);
+}
+
+// Attach tags to a batch of post rows without N+1. Builds one query per
+// call; fine for FEED_LIMIT-sized lists.
+function attachTags(rows) {
+  if (!rows.length) return rows;
+  const ids = rows.map((r) => r.id);
+  const placeholders = ids.map(() => '?').join(',');
+  const stmt = db.prepare(
+    `SELECT post_id, tag FROM post_tags WHERE post_id IN (${placeholders}) ORDER BY tag ASC`
+  );
+  const byId = new Map(ids.map((id) => [id, []]));
+  for (const { post_id, tag } of stmt.all(...ids)) byId.get(post_id).push(tag);
+  for (const r of rows) r.tags = byId.get(r.id) || [];
+  return rows;
 }
 
 const toggleReactionTx = db.transaction((postId, tokenHash, kind) => {
@@ -93,6 +188,20 @@ const claimTokenSlotTx = db.transaction((userId, today) => {
   return { ok: true };
 });
 
+// Sets tags for a post atomically: replace, then re-insert. Also used by
+// create + update flows.
+const setPostTagsTx = db.transaction((postId, tags) => {
+  Q.clearPostTags.run(postId);
+  for (const tag of tags) Q.insertPostTag.run(postId, tag);
+});
+
+// Parse @pseudonym mentions out of text and record them against the
+// target pseudonym. Idempotent: callers pre-clear before calling on an
+// edit (see editPost/editComment paths). Runs inside one transaction.
+const recordMentionsTx = db.transaction((targets, postId, commentId, createdAt) => {
+  for (const t of targets) Q.insertMention.run(t, postId, commentId, createdAt);
+});
+
 function hashToken(token) { return crypto.createHash('sha256').update(token).digest('hex'); }
 function pseudonymFromHash(h) { return h.slice(0, 8); }
 function todayUTC() { return new Date().toISOString().slice(0, 10); }
@@ -104,8 +213,8 @@ function requireSession(req, res, next) {
   catch { res.status(401).json({ error: '会话无效或已过期' }); }
 }
 
-function parseId(req, res) {
-  const id = parseInt(req.params.id, 10);
+function parseId(req, res, key = 'id') {
+  const id = parseInt(req.params[key], 10);
   if (!Number.isFinite(id)) { res.status(400).json({ error: '无效 ID' }); return null; }
   return id;
 }
@@ -124,6 +233,37 @@ function sanitizeText(s, max) {
   return trimmed;
 }
 
+// Tags: accept an optional array of strings. Lowercase, dedupe, cap at
+// MAX_TAGS_PER_POST. Returns the cleaned array, or null on a bad shape.
+function sanitizeTags(input) {
+  if (input == null) return [];
+  if (!Array.isArray(input)) return null;
+  const seen = new Set();
+  for (const raw of input) {
+    if (typeof raw !== 'string') return null;
+    const t = raw.trim().toLowerCase();
+    if (!TAG_RE.test(t)) return null;
+    seen.add(t);
+    if (seen.size > MAX_TAGS_PER_POST) return null;
+  }
+  return [...seen];
+}
+
+function sanitizeTagParam(raw) {
+  if (typeof raw !== 'string') return null;
+  const t = raw.trim().toLowerCase();
+  return TAG_RE.test(t) ? t : null;
+}
+
+// Strip FTS5 operator syntax so user input is treated as literal tokens.
+// The trigram tokenizer requires 3+ chars; shorter queries return nothing.
+function sanitizeFtsQuery(q) {
+  if (typeof q !== 'string') return null;
+  const cleaned = q.replace(/["()*:^~+\\-]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (cleaned.length < SEARCH_MIN_CHARS || cleaned.length > 200) return null;
+  return cleaned;
+}
+
 function issueSession(res, userId, username, isAdmin) {
   const token = jwt.sign({ uid: userId, u: username, a: isAdmin }, JWT_SECRET, {
     expiresIn: `${SESSION_TTL_DAYS}d`,
@@ -138,6 +278,25 @@ function resolveToken(token) {
   if (!row || row.expires_at < Date.now()) return null;
   return { tokenHash, pseudonym: pseudonymFromHash(tokenHash) };
 }
+
+// Recompute the mention pointers for a piece of content. Old mentions for
+// this post/comment are cleared first so edits don't leave stale rows.
+function recordMentionsForPost(postId, content, createdAt) {
+  const targets = extractMentionTargets(content);
+  if (targets.length) recordMentionsTx(targets, postId, null, createdAt);
+}
+function recordMentionsForComment(postId, commentId, content, createdAt) {
+  const targets = extractMentionTargets(content);
+  if (targets.length) recordMentionsTx(targets, postId, commentId, createdAt);
+}
+const clearMentionsForPost = db.prepare(
+  'DELETE FROM mentions WHERE post_id = ? AND comment_id IS NULL'
+);
+const clearMentionsForComment = db.prepare(
+  'DELETE FROM mentions WHERE comment_id = ?'
+);
+
+// Auth
 
 app.post('/api/register', async (req, res) => {
   const { username, password } = req.body || {};
@@ -187,28 +346,45 @@ app.post('/api/token', requireSession, (req, res) => {
   res.json({ token, pseudonym: pseudonymFromHash(tokenHash), expires_at: expiresAt });
 });
 
+// Feed. Supports optional ?tag=xyz filter. Tags are attached in batch.
 app.get('/api/posts', requireSession, (req, res) => {
-  const rows = Q.listPosts.all().map((r) => ({
+  let rows;
+  const tagParam = req.query.tag;
+  if (tagParam != null) {
+    const tag = sanitizeTagParam(tagParam);
+    if (!tag) return res.status(400).json({ error: '无效的标签' });
+    rows = Q.listPostsByTag.all(tag);
+  } else {
+    rows = Q.listPosts.all();
+  }
+  rows = rows.map((r) => ({
     id: r.id,
     pseudonym: r.pseudonym,
     title: r.title,
     content: r.content,
     truncated: !!r.truncated,
     created_at: r.created_at,
+    edited_at: r.edited_at,
   }));
+  attachTags(rows);
   res.json(rows);
 });
 
 app.post('/api/posts', requireSession, (req, res) => {
-  const { token, title, content } = req.body || {};
+  const { token, title, content, tags } = req.body || {};
   const resolved = resolveToken(token);
   if (!resolved) return res.status(401).json({ error: '发帖令牌无效或已过期' });
   const t = sanitizeText(title, 200);
   const c = sanitizeText(content, 10000);
   if (!t || !c) return res.status(400).json({ error: '标题和内容不能为空' });
+  const cleanTags = sanitizeTags(tags);
+  if (cleanTags === null) return res.status(400).json({ error: '标签格式错误（最多 5 个，每个 1–24 位 a-z / 0-9 / - / _）' });
 
   const createdAt = Date.now();
-  const info = Q.insertPost.run(resolved.pseudonym, t, c, createdAt);
+  const info = Q.insertPost.run(resolved.pseudonym, t, c, createdAt, resolved.tokenHash);
+  if (cleanTags.length) setPostTagsTx(info.lastInsertRowid, cleanTags);
+  recordMentionsForPost(info.lastInsertRowid, c, createdAt);
+
   res.json({
     id: info.lastInsertRowid,
     pseudonym: resolved.pseudonym,
@@ -216,6 +392,8 @@ app.post('/api/posts', requireSession, (req, res) => {
     content: c,
     truncated: false,
     created_at: createdAt,
+    edited_at: null,
+    tags: cleanTags,
   });
 });
 
@@ -224,7 +402,42 @@ app.get('/api/posts/:id', requireSession, (req, res) => {
   const post = Q.getPost.get(id);
   if (!post) return res.status(404).json({ error: '未找到' });
   const comments = Q.listComments.all(id);
-  res.json({ post, comments, reactions: reactionCountsFor(id) });
+  // Strip token_hash from the outgoing shape — it's never sent to the client.
+  const { token_hash, ...safePost } = post;
+  res.json({
+    post: safePost,
+    comments,
+    reactions: reactionCountsFor(id),
+    tags: tagsFor(id),
+  });
+});
+
+app.put('/api/posts/:id', requireSession, (req, res) => {
+  const id = parseId(req, res); if (id == null) return;
+  const { token, title, content, tags } = req.body || {};
+  const resolved = resolveToken(token);
+  if (!resolved) return res.status(401).json({ error: '发帖令牌无效或已过期' });
+  const t = sanitizeText(title, 200);
+  const c = sanitizeText(content, 10000);
+  if (!t || !c) return res.status(400).json({ error: '标题和内容不能为空' });
+  const cleanTags = sanitizeTags(tags);
+  if (cleanTags === null) return res.status(400).json({ error: '标签格式错误（最多 5 个，每个 1–24 位 a-z / 0-9 / - / _）' });
+
+  const editedAt = Date.now();
+  const info = Q.updatePost.run(t, c, editedAt, id, resolved.tokenHash);
+  if (info.changes === 0) {
+    const existed = Q.postExists.get(id);
+    return res.status(existed ? 403 : 404).json({ error: existed ? '只有作者可以编辑' : '未找到' });
+  }
+  setPostTagsTx(id, cleanTags);
+  // Edits regenerate the mention pointers for this post.
+  clearMentionsForPost.run(id);
+  recordMentionsForPost(id, c, editedAt);
+
+  res.json({
+    id, pseudonym: resolved.pseudonym, title: t, content: c,
+    truncated: false, created_at: null, edited_at: editedAt, tags: cleanTags,
+  });
 });
 
 app.post('/api/posts/:id/reactions', requireSession, (req, res) => {
@@ -256,13 +469,15 @@ app.post('/api/posts/:id/comments', requireSession, (req, res) => {
 
   const createdAt = Date.now();
   try {
-    const info = Q.insertComment.run(id, parentId, resolved.pseudonym, c, createdAt);
+    const info = Q.insertComment.run(id, parentId, resolved.pseudonym, c, createdAt, resolved.tokenHash);
+    recordMentionsForComment(id, info.lastInsertRowid, c, createdAt);
     res.json({
       id: info.lastInsertRowid,
       parent_id: parentId,
       pseudonym: resolved.pseudonym,
       content: c,
       created_at: createdAt,
+      edited_at: null,
     });
   } catch (err) {
     if (err.code === 'SQLITE_CONSTRAINT_FOREIGNKEY') {
@@ -272,13 +487,140 @@ app.post('/api/posts/:id/comments', requireSession, (req, res) => {
   }
 });
 
-// Admin-only moderation. Removes content; does not deanonymize.
-app.delete('/api/posts/:id', requireSession, (req, res) => {
-  if (!req.user.a) return res.status(403).json({ error: '仅限管理员操作' });
+app.put('/api/posts/:pid/comments/:id', requireSession, (req, res) => {
+  const postId = parseId(req, res, 'pid'); if (postId == null) return;
   const id = parseId(req, res); if (id == null) return;
-  const info = Q.deletePost.run(id);
-  if (info.changes === 0) return res.status(404).json({ error: '未找到' });
+  const { token, content } = req.body || {};
+  const resolved = resolveToken(token);
+  if (!resolved) return res.status(401).json({ error: '发帖令牌无效或已过期' });
+  const c = sanitizeText(content, 5000);
+  if (!c) return res.status(400).json({ error: '评论内容不能为空' });
+
+  const existing = Q.getComment.get(id);
+  if (!existing || existing.post_id !== postId) return res.status(404).json({ error: '未找到' });
+
+  const editedAt = Date.now();
+  const info = Q.updateComment.run(c, editedAt, id, resolved.tokenHash);
+  if (info.changes === 0) return res.status(403).json({ error: '只有作者可以编辑' });
+
+  clearMentionsForComment.run(id);
+  recordMentionsForComment(postId, id, c, editedAt);
+
+  res.json({ id, pseudonym: existing.pseudonym, content: c, edited_at: editedAt });
+});
+
+// Author OR admin can delete. Author uses token; admin uses their session.
+app.delete('/api/posts/:id', requireSession, (req, res) => {
+  const id = parseId(req, res); if (id == null) return;
+  const { token } = req.body || {};
+  if (req.user.a) {
+    const info = Q.deletePost.run(id);
+    if (info.changes === 0) return res.status(404).json({ error: '未找到' });
+    return res.json({ ok: true });
+  }
+  const resolved = resolveToken(token);
+  if (!resolved) return res.status(401).json({ error: '发帖令牌无效或已过期' });
+  const info = Q.deleteOwnPost.run(id, resolved.tokenHash);
+  if (info.changes === 0) {
+    const existed = Q.postExists.get(id);
+    return res.status(existed ? 403 : 404).json({ error: existed ? '只有作者可以删除' : '未找到' });
+  }
   res.json({ ok: true });
+});
+
+app.delete('/api/posts/:pid/comments/:id', requireSession, (req, res) => {
+  const postId = parseId(req, res, 'pid'); if (postId == null) return;
+  const id = parseId(req, res); if (id == null) return;
+  const { token } = req.body || {};
+  const existing = Q.getComment.get(id);
+  if (!existing || existing.post_id !== postId) return res.status(404).json({ error: '未找到' });
+  if (req.user.a) {
+    db.prepare('DELETE FROM comments WHERE id = ?').run(id);
+    return res.json({ ok: true });
+  }
+  const resolved = resolveToken(token);
+  if (!resolved) return res.status(401).json({ error: '发帖令牌无效或已过期' });
+  const info = Q.deleteOwnCmt.run(id, resolved.tokenHash);
+  if (info.changes === 0) return res.status(403).json({ error: '只有作者可以删除' });
+  res.json({ ok: true });
+});
+
+// Tags list. Used for the sidebar tag chips.
+app.get('/api/tags', requireSession, (req, res) => {
+  res.json(Q.listAllTags.all());
+});
+
+// FTS5 search over post title+content. Trigram tokenizer = minimum 3 chars.
+app.get('/api/search', requireSession, (req, res) => {
+  const q = sanitizeFtsQuery(req.query.q);
+  if (!q) {
+    return res.status(400).json({
+      error: `搜索词需为 ${SEARCH_MIN_CHARS} 位及以上`,
+    });
+  }
+  const rows = Q.searchPosts.all(q).map((r) => ({
+    id: r.id,
+    pseudonym: r.pseudonym,
+    title: r.title,
+    content: r.content,
+    truncated: !!r.truncated,
+    created_at: r.created_at,
+    edited_at: r.edited_at,
+  }));
+  attachTags(rows);
+  res.json(rows);
+});
+
+// @mention inbox for the current posting token. Returns mentions whose
+// target_pseudonym matches the token's pseudonym, from the last
+// TOKEN_TTL_HOURS window so stale mentions never surface to a new holder.
+app.post('/api/mentions', requireSession, (req, res) => {
+  const { token } = req.body || {};
+  const resolved = resolveToken(token);
+  if (!resolved) return res.status(401).json({ error: '发帖令牌无效或已过期' });
+  const cutoff = Date.now() - TOKEN_TTL_HOURS * 3600 * 1000;
+  const rows = Q.listMentions.all(resolved.pseudonym, cutoff);
+  res.json({ mentions: rows, now: Date.now() });
+});
+
+// Session-gated RSS. Same content for every logged-in user — no per-user
+// tailoring, no link back to who fetched it.
+app.get('/api/feed.xml', requireSession, (req, res) => {
+  const rows = Q.listPostsForRss.all();
+  const host = req.get('host') || `localhost:${PORT}`;
+  const proto = req.protocol || 'http';
+  const base = `${proto}://${host}`;
+  const esc = (s) =>
+    String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  const items = rows.map((r) => {
+    const link = `${base}/p/${r.id}`;
+    const snippet = r.content.length > 400 ? r.content.slice(0, 400) + '…' : r.content;
+    return `
+    <item>
+      <title>${esc(r.title)}</title>
+      <link>${esc(link)}</link>
+      <guid isPermaLink="true">${esc(link)}</guid>
+      <pubDate>${new Date(r.created_at).toUTCString()}</pubDate>
+      <author>${esc(r.pseudonym)}@anonforum</author>
+      <description>${esc(snippet)}</description>
+    </item>`;
+  }).join('');
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>匿名论坛</title>
+    <link>${esc(base)}/</link>
+    <description>Login-gated but unlinkable discussion platform</description>
+    <language>zh-CN</language>
+    <lastBuildDate>${new Date().toUTCString()}</lastBuildDate>${items}
+  </channel>
+</rss>`;
+  res.type('application/rss+xml; charset=utf-8').send(xml);
 });
 
 // Deep-link routes. We serve the SPA shell for any /p/<id> — the client
@@ -288,12 +630,23 @@ app.get('/p/:id(\\d+)', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-// Purges expired token hashes. Since plaintext was never stored and no
-// user_id was ever attached to a post, this sweep plus the passage of
-// today's calendar boundary is what makes old posts truly unlinkable.
+// Purges expired token hashes, orphan author-edit fingerprints on posts
+// and comments, and stale mention pointers. Nothing here is keyed by
+// user_id, so this sweep plus the calendar boundary is what makes old
+// posts truly unlinkable.
 function rotate() {
-  const info = Q.purgeTokens.run(Date.now());
-  if (info.changes > 0) console.log(`[rotate] purged ${info.changes} expired tokens`);
+  const now = Date.now();
+  const mentionCutoff = now - TOKEN_TTL_HOURS * 3600 * 1000;
+  const t = Q.purgeTokens.run(now);
+  const ph = Q.orphanPostHashes.run();
+  const ch = Q.orphanCmtHashes.run();
+  const m = Q.purgeMentions.run(mentionCutoff);
+  if (t.changes > 0 || m.changes > 0 || ph.changes > 0 || ch.changes > 0) {
+    console.log(
+      `[rotate] purged ${t.changes} tokens, ${m.changes} mentions, ` +
+      `orphaned ${ph.changes} post / ${ch.changes} comment hashes`
+    );
+  }
 }
 setInterval(rotate, ROTATE_INTERVAL_MS).unref();
 rotate();

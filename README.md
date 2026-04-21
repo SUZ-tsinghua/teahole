@@ -115,22 +115,34 @@ doesn't already know.
       `post_tokens`, so reactions vanish when the token expires. "Did I
       react?" is tracked client-side in localStorage — the server never
       returns per-user reaction state.
-
-### Planned (privacy-preserving)
-
-- [ ] **Tags / channels** — posts carry `#tag`s; filter feed by tag. Tags
-      are stored on the post, not per user, so no leak.
-- [ ] **Search** — full-text over post titles/bodies and comment bodies.
-      SQLite FTS5 index; no query logging.
-- [ ] **Edit / delete your own content** — gated on "you still hold the
-      token it was posted with." Natural window is the 24h token lifetime,
-      and the check is a pure token-hash comparison (server still doesn't
-      know who you are).
-- [ ] **Per-token inbox for `@mentions`** — when someone `@`s a pseudonym,
-      stash a pointer under that `token_hash`. The token holder sees a
-      badge on next visit; cascade-purged when the token expires.
-- [ ] **RSS feed (authenticated)** — for users who want to follow without
-      polling. Session-gated; no per-user tailoring.
+- [x] **Tags** — posts carry lowercase `a-z0-9_-` tags (up to 5 per post,
+      24 chars each). `post_tags(post_id, tag)` with FK cascade; the
+      sidebar surfaces a tag cloud, clicking a tag filters the feed via
+      `GET /api/posts?tag=...`. Tags are stored on the post, not per
+      user — no leak.
+- [x] **Full-text search** — FTS5 virtual table `posts_fts` over
+      title+content, kept in sync by INSERT/UPDATE/DELETE triggers on
+      `posts`. Uses the `trigram` tokenizer so CJK queries work too
+      (minimum 3 characters). No query logging — the search term never
+      hits disk beyond the MATCH call itself.
+- [x] **Edit / delete your own content** — `posts.token_hash` and
+      `comments.token_hash` are compared to `sha256(submitted_token)`
+      with equality guards in the `UPDATE` / `DELETE` SQL itself. Once
+      the token expires and `post_tokens` purges its row, the stored
+      hash no longer joins to anything — edit/delete becomes impossible,
+      which is also when the content becomes fully unlinkable.
+- [x] **Per-token `@mention` inbox** — posts/comments are scanned for
+      `@[a-f0-9]{8}` at write time and pointers are stashed in
+      `mentions(target_pseudonym, post_id, comment_id, created_at)`.
+      `POST /api/mentions` (token in body) returns rows addressed to the
+      caller's pseudonym from the last TTL window. `rotate()` also
+      purges `mentions.created_at < now - TTL` so a new token holder
+      that coincidentally takes the same pseudonym prefix never sees
+      mentions meant for the previous one. Edits re-derive the pointer
+      list; deletes cascade via FK.
+- [x] **Session-gated RSS** — `GET /api/feed.xml` serves RSS 2.0 of the
+      last 50 posts to any authenticated caller. No per-user tailoring,
+      no cursor, nothing bound to the fetcher's identity.
 
 ### Explicitly out of scope (would break the model)
 

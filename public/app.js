@@ -1,7 +1,13 @@
 const TOKEN_STORE_KEY = 'anonforum.token';
 const THEME_STORE_KEY = 'anonforum.theme';
 const MY_REACTIONS_KEY = 'anonforum.myReactions';
+const MENTIONS_SEEN_KEY = 'anonforum.mentionsSeen';
+// Authoritative list lives on the server (REACTION_KIND_SET in server.js).
+// Kept in sync manually — if you change one, change the other.
 const REACTION_KINDS = ['👍', '❤️', '😂', '😮', '😢', '🎉'];
+const MENTION_IN_TEXT_RE = /@([a-f0-9]{8})|#(\d{1,10})/g;
+const MAX_VISUAL_DEPTH = 4;
+const MENTION_POLL_MS = 60_000;
 
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => document.querySelectorAll(s);
@@ -72,16 +78,46 @@ function setMyReaction(pseudonym, postId, kind, on) {
   localStorage.setItem(MY_REACTIONS_KEY, JSON.stringify(all));
 }
 
+// Mention-inbox read state, keyed by pseudonym (same TTL boundary as token).
+function getMentionSeen(pseudonym) {
+  if (!pseudonym) return 0;
+  try {
+    const all = JSON.parse(localStorage.getItem(MENTIONS_SEEN_KEY) || '{}');
+    return all[pseudonym] || 0;
+  } catch { return 0; }
+}
+function setMentionSeen(pseudonym, ms) {
+  if (!pseudonym) return;
+  let all;
+  try { all = JSON.parse(localStorage.getItem(MENTIONS_SEEN_KEY) || '{}'); }
+  catch { all = {}; }
+  all[pseudonym] = ms;
+  localStorage.setItem(MENTIONS_SEEN_KEY, JSON.stringify(all));
+}
+
 function fmtDate(ms) { return new Date(ms).toLocaleString('zh-CN'); }
-function fmtMeta(pseudonym, createdAt) { return `${pseudonym} · ${fmtDate(createdAt)}`; }
-function metaLine(pseudonym, createdAt) {
-  return el('div', { className: 'meta', textContent: fmtMeta(pseudonym, createdAt) });
+function fmtMeta(pseudonym, createdAt, editedAt) {
+  const base = `${pseudonym} · ${fmtDate(createdAt)}`;
+  return editedAt ? `${base} · 已编辑` : base;
+}
+function metaLine(pseudonym, createdAt, editedAt) {
+  return el('div', { className: 'meta', textContent: fmtMeta(pseudonym, createdAt, editedAt) });
 }
 
 const VIEW = { EMPTY: 'empty-view', THREAD: 'thread-view', COMPOSE: 'compose-view' };
 const viewNodes = Object.fromEntries(Object.values(VIEW).map((id) => [id, $('#' + id)]));
 const readerNode = $('#reader');
 let currentView = null;
+let currentThread = null;
+let currentComments = [];
+let currentPostPseudonym = null;
+let currentPostTags = [];
+let currentPostOwned = false;
+let feedPosts = [];
+let filterState = { kind: null, value: null };
+let composeMode = { kind: 'new', postId: null };
+let mentionPollTimer = null;
+let lastMentions = [];
 
 function showReader(which) {
   if (currentView === which) return;
@@ -105,7 +141,7 @@ function postIdFromPath() {
 function syncUrl(id) {
   const target = id == null ? '/' : `/p/${id}`;
   if (location.pathname === target) return;
-  history.pushState({ postId: id }, '', target);
+  history.pushState(null, '', target);
 }
 
 function renderTokenChip() {
@@ -114,6 +150,7 @@ function renderTokenChip() {
   const text = $('#token-chip-text');
   chip.classList.toggle('active', !!t);
   text.textContent = t ? `匿名 ID：${t.pseudonym}` : '未领取令牌 — 点击获取';
+  if (!t) $('#mention-dot').hidden = true;
 }
 
 function renderTokenBox() {
@@ -135,6 +172,7 @@ function openDialog() {
   $('#token-dialog').hidden = false;
 }
 function closeDialog() { $('#token-dialog').hidden = true; }
+function closeMentionsDialog() { $('#mentions-dialog').hidden = true; }
 
 $('#token-toggle').addEventListener('click', openDialog);
 document.addEventListener('click', (e) => {
@@ -142,6 +180,7 @@ document.addEventListener('click', (e) => {
   if (!t) return;
   const kind = t.dataset.close;
   if (kind === 'dialog') closeDialog();
+  else if (kind === 'mentions') closeMentionsDialog();
   else if (kind === 'reader') closeReader();
 });
 
@@ -160,19 +199,24 @@ async function refreshMe() {
     );
     renderTokenChip();
     await loadFeed();
+    loadTags().catch(() => {});
     showReader(VIEW.EMPTY);
     const initialId = postIdFromPath();
     if (initialId != null) await openThread(initialId, { pushUrl: false });
+    schedulePollingMentions();
+    refreshMentions({ silent: true }).catch(() => {});
   } catch {
     $('#auth-view').hidden = false;
     $('#forum-view').hidden = true;
     $('#userbar').innerHTML = '';
+    stopPollingMentions();
   }
 }
 
 async function logout() {
   await api('POST', '/api/logout');
   clearToken();
+  stopPollingMentions();
   refreshMe();
 }
 
@@ -198,22 +242,119 @@ $('#new-token').addEventListener('click', async () => {
     setToken({ token: r.token, pseudonym: r.pseudonym, expires_at: r.expires_at });
     renderTokenBox();
     renderTokenChip();
+    refreshMentions({ silent: true }).catch(() => {});
   } catch (err) {
     $('#token-err').textContent = err.message;
   }
 });
 
+// --- Feed + filters ---
+
+function renderFilterBar() {
+  const bar = $('#filter-bar');
+  bar.innerHTML = '';
+  const label = $('#feed-label');
+  if (!filterState.kind) {
+    bar.hidden = true;
+    label.textContent = '动态';
+    return;
+  }
+  bar.hidden = false;
+  const text = filterState.kind === 'tag'
+    ? `筛选标签：#${filterState.value}`
+    : `搜索：${filterState.value}`;
+  label.textContent = filterState.kind === 'tag' ? '动态 · 标签' : '动态 · 搜索';
+  bar.append(
+    el('span', { className: 'filter-text', textContent: text }),
+    el('button', { className: 'link-btn', type: 'button', textContent: '清除', onclick: clearFilter }),
+  );
+}
+
+async function clearFilter() {
+  filterState = { kind: null, value: null };
+  $('#search-input').value = '';
+  $('#search-clear').hidden = true;
+  renderFilterBar();
+  await loadFeed();
+}
+
+async function loadFeed() {
+  const feed = $('#feed');
+  feed.innerHTML = '';
+  let rows;
+  try {
+    if (filterState.kind === 'tag') {
+      rows = await api('GET', `/api/posts?tag=${encodeURIComponent(filterState.value)}`);
+    } else if (filterState.kind === 'search') {
+      rows = await api('GET', `/api/search?q=${encodeURIComponent(filterState.value)}`);
+    } else {
+      rows = await api('GET', '/api/posts');
+    }
+  } catch (err) {
+    feed.appendChild(el('div', { className: 'feed-empty', textContent: err.message }));
+    feedPosts = [];
+    return;
+  }
+  feedPosts = rows;
+  renderFilterBar();
+  if (!rows.length) {
+    const msg = filterState.kind === 'search'
+      ? '没有匹配的帖子。'
+      : filterState.kind === 'tag'
+      ? '这个标签下还没有帖子。'
+      : '还没有帖子。做第一个发帖的人吧。';
+    feed.appendChild(el('div', { className: 'feed-empty', textContent: msg }));
+    return;
+  }
+  for (const p of rows) feed.appendChild(renderPostCard(p));
+  if (currentThread != null) markActivePost(currentThread);
+}
+
+async function loadTags() {
+  const cloud = $('#tag-cloud');
+  cloud.innerHTML = '';
+  let tags;
+  try { tags = await api('GET', '/api/tags'); } catch { return; }
+  if (!tags.length) return;
+  for (const t of tags.slice(0, 12)) {
+    const chip = el('button', { type: 'button', className: 'tag-chip', title: `${t.n} 篇` });
+    chip.append(
+      el('span', { textContent: `#${t.tag}` }),
+      el('span', { className: 'tag-chip-count', textContent: String(t.n) }),
+    );
+    chip.addEventListener('click', () => filterByTag(t.tag));
+    cloud.appendChild(chip);
+  }
+}
+
+async function filterByTag(tag) {
+  filterState = { kind: 'tag', value: tag };
+  $('#search-input').value = '';
+  $('#search-clear').hidden = true;
+  await loadFeed();
+}
+
 function renderPostCard(p) {
-  const preview = p.truncated ? p.content + '…' : p.content;
   const titleRow = el('div', { className: 'post-title-row' }, [
     el('span', { className: 'id-badge', textContent: `#${p.id}` }),
     el('span', { className: 'post-title', textContent: p.title }),
   ]);
-  const node = el('div', { className: 'post' }, [
+  const preview = p.truncated ? p.content + '…' : p.content;
+  const children = [
     titleRow,
     el('div', { className: 'post-preview', textContent: preview }),
-    metaLine(p.pseudonym, p.created_at),
-  ]);
+    metaLine(p.pseudonym, p.created_at, p.edited_at),
+  ];
+  if (p.tags && p.tags.length) {
+    const tagRow = el('div', { className: 'card-tags' });
+    for (const tag of p.tags) {
+      const chip = el('button', { type: 'button', className: 'tag-pill', textContent: `#${tag}` });
+      chip.addEventListener('click', (e) => { e.stopPropagation(); filterByTag(tag); });
+      tagRow.appendChild(chip);
+    }
+    children.push(tagRow);
+  }
+  const node = el('div', { className: 'post' }, children);
   node.dataset.postId = p.id;
   node.addEventListener('click', () => openThread(p.id));
   return node;
@@ -226,26 +367,49 @@ function markActivePost(id) {
   }
 }
 
-async function loadFeed() {
-  const feed = $('#feed');
-  feed.innerHTML = '';
-  const rows = await api('GET', '/api/posts');
-  feedPosts = rows;
-  if (!rows.length) {
-    feed.appendChild(el('div', { className: 'feed-empty', textContent: '还没有帖子。做第一个发帖的人吧。' }));
-    return;
+// --- Search ---
+
+$('#search-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const q = $('#search-input').value.trim();
+  if (!q) { clearFilter(); return; }
+  filterState = { kind: 'search', value: q };
+  $('#search-clear').hidden = false;
+  await loadFeed();
+});
+$('#search-input').addEventListener('input', () => {
+  $('#search-clear').hidden = !$('#search-input').value;
+});
+$('#search-clear').addEventListener('click', clearFilter);
+
+// --- Compose / edit post ---
+
+$('#compose-btn').addEventListener('click', () => openCompose({ edit: false }));
+
+function openCompose({ edit = false, post = null }) {
+  composeMode = edit && post ? { kind: 'edit', postId: post.id } : { kind: 'new', postId: null };
+  const f = $('#post-form');
+  f.reset();
+  $('#post-err').textContent = '';
+  $('#compose-title').textContent = edit ? '编辑帖子' : '发新帖';
+  $('#post-submit').textContent = edit ? '保存修改' : '匿名发布';
+  if (edit && post) {
+    f.title.value = post.title;
+    f.content.value = post.content;
+    f.tags.value = (post.tags || []).join(' ');
   }
-  for (const p of rows) feed.appendChild(renderPostCard(p));
+  if (!edit) {
+    currentThread = null;
+    markActivePost(null);
+  }
+  showReader(VIEW.COMPOSE);
+  f.title.focus();
 }
 
-$('#compose-btn').addEventListener('click', () => {
-  currentThread = null;
-  markActivePost(null);
-  $('#post-err').textContent = '';
-  $('#post-form').reset();
-  showReader(VIEW.COMPOSE);
-  $('#post-form [name=title]').focus();
-});
+function parseTagsInput(raw) {
+  if (!raw) return [];
+  return [...new Set(raw.trim().toLowerCase().split(/\s+/).filter(Boolean))];
+}
 
 $('#post-form').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -253,29 +417,35 @@ $('#post-form').addEventListener('submit', async (e) => {
   const t = getToken();
   if (!t) { $('#post-err').textContent = '请先获取发帖令牌。'; openDialog(); return; }
   const f = e.target;
+  const tags = parseTagsInput(f.tags.value);
   try {
-    const created = await api('POST', '/api/posts', {
-      token: t.token, title: f.title.value, content: f.content.value,
-    });
-    f.reset();
-    const feed = $('#feed');
-    const emptyMsg = feed.querySelector('.feed-empty');
-    if (emptyMsg) emptyMsg.remove();
-    feedPosts.unshift(created);
-    feed.prepend(renderPostCard(created));
-    await openThread(created.id);
+    let created;
+    if (composeMode.kind === 'edit' && composeMode.postId != null) {
+      created = await api('PUT', `/api/posts/${composeMode.postId}`, {
+        token: t.token, title: f.title.value, content: f.content.value, tags,
+      });
+      await openThread(composeMode.postId);
+      loadFeed().catch(() => {});
+      loadTags().catch(() => {});
+    } else {
+      created = await api('POST', '/api/posts', {
+        token: t.token, title: f.title.value, content: f.content.value, tags,
+      });
+      f.reset();
+      const feed = $('#feed');
+      const emptyMsg = feed.querySelector('.feed-empty');
+      if (emptyMsg) emptyMsg.remove();
+      feedPosts.unshift(created);
+      feed.prepend(renderPostCard(created));
+      loadTags().catch(() => {});
+      await openThread(created.id);
+    }
   } catch (err) {
     $('#post-err').textContent = err.message;
   }
 });
 
-let currentThread = null;
-let currentComments = [];
-let currentPostPseudonym = null;
-let currentReactions = null;
-const MAX_VISUAL_DEPTH = 4;
-const MENTION_RE = /@([a-f0-9]{8})|#(\d{1,10})/g;
-let feedPosts = [];
+// --- Thread view ---
 
 function knownPseudonyms() {
   const set = new Set();
@@ -299,173 +469,162 @@ function jumpToPseudonym(p) {
   if (p === currentPostPseudonym) flashTarget($('#thread-meta'));
 }
 
-function renderTextWithMentions(text) {
-  const frag = document.createDocumentFragment();
-  MENTION_RE.lastIndex = 0;
-  let last = 0, m;
-  while ((m = MENTION_RE.exec(text))) {
-    if (m.index > last) frag.appendChild(document.createTextNode(text.slice(last, m.index)));
-    if (m[1]) {
-      const p = m[1];
-      const chip = el('a', { className: 'mention', href: '#', textContent: `@${p}` });
-      chip.dataset.pseudonym = p;
-      chip.addEventListener('click', (e) => { e.preventDefault(); jumpToPseudonym(p); });
-      frag.appendChild(chip);
-    } else {
-      const id = parseInt(m[2], 10);
-      const chip = el('a', { className: 'mention post-ref', href: '#', textContent: `#${id}` });
-      chip.dataset.postId = String(id);
-      chip.addEventListener('click', (e) => { e.preventDefault(); openThread(id).catch(() => {}); });
-      frag.appendChild(chip);
-    }
-    last = m.index + m[0].length;
-  }
-  if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
-  return frag;
-}
-
-// Markdown renderer. Purpose-built, no deps. Emits a DocumentFragment built
-// from real DOM nodes — never innerHTML on user content. Plain text runs are
-// passed through renderTextWithMentions so @xxxxxxxx / #<id> chips still bind.
-const SAFE_URL_RE = /^(https?:\/\/|\/p\/\d{1,10}(?:[?#].*)?$)/i;
-function safeUrl(u) { return typeof u === 'string' && SAFE_URL_RE.test(u.trim()) ? u.trim() : null; }
-
-// Inline tokens: code span, bold, italic, link. Emits nodes into parent,
-// routing any leftover text through renderTextWithMentions (which also emits
-// plain text when no mention is found, so this composes cleanly).
-function renderInline(text, parent) {
-  // Scan left-to-right, greedily matching the earliest special token.
-  const push = (s) => { if (s) parent.appendChild(renderTextWithMentions(s)); };
-  let i = 0;
-  while (i < text.length) {
-    const rest = text.slice(i);
-    // Inline code first — its content is opaque (no further markdown inside).
-    let m = /^`([^`\n]+)`/.exec(rest);
-    if (m) { parent.appendChild(el('code', { textContent: m[1] })); i += m[0].length; continue; }
-    // Link: [text](url). Reject unsafe schemes — render as literal text.
-    m = /^\[([^\]\n]+)\]\(([^)\s]+)\)/.exec(rest);
-    if (m) {
-      const url = safeUrl(m[2]);
-      if (url) {
-        const a = el('a', { href: url, rel: 'noopener noreferrer', target: '_blank' });
-        renderInline(m[1], a);
-        parent.appendChild(a);
-      } else {
-        push(m[0]);
-      }
-      i += m[0].length; continue;
-    }
-    // Bold (**x**) before italic (*x*) so ** isn't eaten as two italics.
-    m = /^\*\*([\s\S]+?)\*\*/.exec(rest);
-    if (m && !/\n/.test(m[1])) { const b = el('strong'); renderInline(m[1], b); parent.appendChild(b); i += m[0].length; continue; }
-    m = /^\*([^*\n]+?)\*/.exec(rest);
-    if (m) { const it = el('em'); renderInline(m[1], it); parent.appendChild(it); i += m[0].length; continue; }
-    // Advance to the next potential special char so we batch plain runs.
-    const next = rest.slice(1).search(/[`*\[]/);
-    const chunk = next < 0 ? rest : rest.slice(0, next + 1);
-    push(chunk);
-    i += chunk.length;
+function renderThreadTags() {
+  const box = $('#thread-tags');
+  box.innerHTML = '';
+  if (!currentPostTags.length) { box.hidden = true; return; }
+  box.hidden = false;
+  for (const tag of currentPostTags) {
+    const chip = el('button', { type: 'button', className: 'tag-pill', textContent: `#${tag}` });
+    chip.addEventListener('click', () => filterByTag(tag));
+    box.appendChild(chip);
   }
 }
 
-// Render inline content with single-newline -> <br> behaviour.
-function renderInlineWithBreaks(text, parent) {
-  const lines = text.split('\n');
-  lines.forEach((ln, idx) => {
-    renderInline(ln, parent);
-    if (idx < lines.length - 1) parent.appendChild(el('br'));
+function renderThreadActions() {
+  const box = $('#thread-actions');
+  box.innerHTML = '';
+  if (!currentPostOwned) { box.hidden = true; return; }
+  box.hidden = false;
+  const edit = el('button', { type: 'button', className: 'ghost small', textContent: '编辑' });
+  edit.addEventListener('click', () => {
+    openCompose({
+      edit: true,
+      post: {
+        id: currentThread,
+        title: $('#thread-title').lastChild?.textContent || '',
+        content: threadRawContent,
+        tags: currentPostTags,
+      },
+    });
   });
+  const del = el('button', { type: 'button', className: 'ghost small danger', textContent: '删除' });
+  del.addEventListener('click', () => deletePost());
+  box.append(edit, del);
 }
 
-function renderMarkdown(text) {
-  const frag = document.createDocumentFragment();
-  if (typeof text !== 'string' || !text) return frag;
-  const lines = text.replace(/\r\n?/g, '\n').split('\n');
-  let i = 0;
-  while (i < lines.length) {
-    const line = lines[i];
-    // Fenced code block.
-    const fence = /^```([A-Za-z0-9_-]*)\s*$/.exec(line);
-    if (fence) {
-      const buf = [];
-      i++;
-      while (i < lines.length && !/^```\s*$/.test(lines[i])) { buf.push(lines[i]); i++; }
-      if (i < lines.length) i++; // consume closing ```
-      const code = el('code', { textContent: buf.join('\n') });
-      if (fence[1]) code.className = `lang-${fence[1]}`;
-      frag.appendChild(el('pre', {}, [code]));
-      continue;
-    }
-    // Blank line separator.
-    if (line.trim() === '') { i++; continue; }
-    // Headers.
-    const h = /^(#{1,3})\s+(.*)$/.exec(line);
-    if (h) {
-      const tag = `h${h[1].length}`;
-      const node = el(tag);
-      renderInline(h[2].trim(), node);
-      frag.appendChild(node);
-      i++;
-      continue;
-    }
-    // Blockquote: consecutive "> " lines joined into one block.
-    if (/^>\s?/.test(line)) {
-      const buf = [];
-      while (i < lines.length && /^>\s?/.test(lines[i])) { buf.push(lines[i].replace(/^>\s?/, '')); i++; }
-      const node = el('blockquote');
-      renderInlineWithBreaks(buf.join('\n'), node);
-      frag.appendChild(node);
-      continue;
-    }
-    // Unordered list.
-    if (/^[-*]\s+/.test(line)) {
-      const ul = el('ul');
-      while (i < lines.length && /^[-*]\s+/.test(lines[i])) {
-        const li = el('li');
-        renderInline(lines[i].replace(/^[-*]\s+/, ''), li);
-        ul.appendChild(li);
-        i++;
-      }
-      frag.appendChild(ul);
-      continue;
-    }
-    // Ordered list.
-    if (/^\d+\.\s+/.test(line)) {
-      const ol = el('ol');
-      while (i < lines.length && /^\d+\.\s+/.test(lines[i])) {
-        const li = el('li');
-        renderInline(lines[i].replace(/^\d+\.\s+/, ''), li);
-        ol.appendChild(li);
-        i++;
-      }
-      frag.appendChild(ol);
-      continue;
-    }
-    // Paragraph: consume until blank line or block-starting line.
-    const buf = [];
-    while (i < lines.length && lines[i].trim() !== '' &&
-           !/^```/.test(lines[i]) && !/^#{1,3}\s+/.test(lines[i]) &&
-           !/^>\s?/.test(lines[i]) && !/^[-*]\s+/.test(lines[i]) &&
-           !/^\d+\.\s+/.test(lines[i])) {
-      buf.push(lines[i]); i++;
-    }
-    const p = el('p');
-    renderInlineWithBreaks(buf.join('\n'), p);
-    frag.appendChild(p);
+let threadRawContent = '';
+
+async function deletePost() {
+  if (currentThread == null) return;
+  if (!confirm('删除这个帖子？评论也会一并删除。')) return;
+  const t = getToken();
+  if (!t) { openDialog(); return; }
+  try {
+    await api('DELETE', `/api/posts/${currentThread}`, { token: t.token });
+    const gone = currentThread;
+    closeReader();
+    // Remove from feed cache + DOM.
+    feedPosts = feedPosts.filter((p) => p.id !== gone);
+    const card = $(`.post[data-post-id="${gone}"]`);
+    if (card) card.remove();
+    loadTags().catch(() => {});
+  } catch (err) {
+    alert(err.message);
   }
-  return frag;
 }
+
+async function openThread(id, { pushUrl = true } = {}) {
+  currentThread = id;
+  markActivePost(id);
+  if (pushUrl) syncUrl(id);
+  let data;
+  try {
+    data = await api('GET', `/api/posts/${id}`);
+  } catch (err) {
+    renderMissingThread(id, err.message);
+    return;
+  }
+  const { post, comments, reactions, tags } = data;
+  currentComments = comments.slice();
+  currentPostPseudonym = post.pseudonym;
+  currentPostTags = tags || [];
+  const me = getToken();
+  currentPostOwned = !!(me && me.pseudonym === post.pseudonym);
+  threadRawContent = post.content;
+  $('#thread-title').innerHTML = '';
+  $('#thread-title').append(
+    el('span', { className: 'id-badge id-badge--lg', textContent: `#${post.id}` }),
+    el('span', { textContent: post.title }),
+  );
+  $('#thread-meta').dataset.pseudonym = post.pseudonym;
+  $('#thread-meta').textContent = fmtMeta(post.pseudonym, post.created_at, post.edited_at);
+  $('#thread-body').innerHTML = '';
+  $('#thread-body').appendChild(renderMarkdown(post.content));
+  renderThreadTags();
+  renderThreadActions();
+  renderReactions(reactions || Object.fromEntries(REACTION_KINDS.map((k) => [k, 0])));
+  const box = $('#comments');
+  box.innerHTML = '';
+  if (!comments.length) {
+    box.appendChild(el('div', { className: 'empty-comments', textContent: '还没有评论。' }));
+  } else {
+    renderCommentTree(box, comments);
+  }
+  $('#comment-err').textContent = '';
+  $('#comment-form').reset();
+  showReader(VIEW.THREAD);
+  readerNode.scrollTo({ top: 0, behavior: 'instant' });
+}
+
+function renderMissingThread(id, message) {
+  currentComments = [];
+  currentPostPseudonym = null;
+  currentPostTags = [];
+  currentPostOwned = false;
+  threadRawContent = '';
+  $('#reactions').innerHTML = '';
+  $('#thread-tags').innerHTML = '';
+  $('#thread-tags').hidden = true;
+  $('#thread-actions').innerHTML = '';
+  $('#thread-actions').hidden = true;
+  $('#thread-title').innerHTML = '';
+  $('#thread-title').append(
+    el('span', { className: 'id-badge id-badge--lg', textContent: `#${id}` }),
+    el('span', { textContent: '帖子不存在' }),
+  );
+  $('#thread-meta').textContent = '';
+  $('#thread-body').innerHTML = '';
+  $('#thread-body').appendChild(el('p', { className: 'muted', textContent: message || '未找到该帖子。' }));
+  $('#comments').innerHTML = '';
+  $('#comment-err').textContent = '';
+  $('#comment-form').reset();
+  showReader(VIEW.THREAD);
+  readerNode.scrollTo({ top: 0, behavior: 'instant' });
+}
+
+window.addEventListener('popstate', () => {
+  if ($('#forum-view').hidden) return;
+  const id = postIdFromPath();
+  if (id == null) {
+    currentThread = null;
+    markActivePost(null);
+    showReader(VIEW.EMPTY);
+  } else if (id !== currentThread) {
+    openThread(id, { pushUrl: false }).catch(() => {});
+  }
+});
+
+// --- Comments ---
 
 function renderComment(c, depth) {
   const d = Math.min(depth, MAX_VISUAL_DEPTH);
   const body = el('div', { className: 'comment-body' });
   body.appendChild(renderMarkdown(c.content));
+  const actions = el('div', { className: 'comment-actions' });
   const replyBtn = el('button', { className: 'link-btn', type: 'button', textContent: '回复' });
   replyBtn.addEventListener('click', () => toggleReplyForm(node, c));
-
-  const actions = el('div', { className: 'comment-actions' }, [replyBtn]);
+  actions.appendChild(replyBtn);
+  const me = getToken();
+  if (me && me.pseudonym === c.pseudonym) {
+    const editBtn = el('button', { className: 'link-btn', type: 'button', textContent: '编辑' });
+    editBtn.addEventListener('click', () => startEditComment(node, c));
+    const delBtn = el('button', { className: 'link-btn danger', type: 'button', textContent: '删除' });
+    delBtn.addEventListener('click', () => deleteComment(c));
+    actions.append(editBtn, delBtn);
+  }
   const node = el('div', { className: 'comment' }, [
-    metaLine(c.pseudonym, c.created_at),
+    metaLine(c.pseudonym, c.created_at, c.edited_at),
     body,
     actions,
   ]);
@@ -507,6 +666,70 @@ function buildReplyForm(parent) {
     await submitComment({ parentId: parent.id, content: ta.value, errNode: err, onDone: () => form.remove() });
   });
   return form;
+}
+
+function startEditComment(commentNode, c) {
+  if (commentNode.querySelector(':scope > .edit-form')) return;
+  const ta = el('textarea', {
+    name: 'content', required: true, maxLength: 5000,
+    value: c.content,
+  });
+  const err = el('div', { className: 'err' });
+  const cancel = el('button', { type: 'button', className: 'ghost', textContent: '取消' });
+  const submit = el('button', { type: 'submit', textContent: '保存' });
+  const actions = el('div', { className: 'form-actions' }, [cancel, submit]);
+  const form = el('form', { className: 'inline-form edit-form' }, [ta, actions, err]);
+  const body = commentNode.querySelector(':scope > .comment-body');
+  body.hidden = true;
+  commentNode.insertBefore(form, body.nextSibling);
+  cancel.addEventListener('click', () => {
+    form.remove();
+    body.hidden = false;
+  });
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    err.textContent = '';
+    const t = getToken();
+    if (!t) { err.textContent = '请先获取发帖令牌。'; openDialog(); return; }
+    try {
+      const updated = await api('PUT', `/api/posts/${currentThread}/comments/${c.id}`, {
+        token: t.token, content: ta.value,
+      });
+      Object.assign(c, { content: updated.content, edited_at: updated.edited_at });
+      const idx = currentComments.findIndex((x) => x.id === c.id);
+      if (idx >= 0) currentComments[idx] = c;
+      // Re-render body.
+      body.innerHTML = '';
+      body.appendChild(renderMarkdown(updated.content));
+      commentNode.querySelector(':scope > .meta').textContent = fmtMeta(c.pseudonym, c.created_at, updated.edited_at);
+      form.remove();
+      body.hidden = false;
+      flashTarget(commentNode);
+    } catch (e2) {
+      err.textContent = e2.message;
+    }
+  });
+  attachMentionAutocomplete(ta);
+  ta.focus();
+}
+
+async function deleteComment(c) {
+  if (!confirm('删除这条评论？')) return;
+  const t = getToken();
+  if (!t) { openDialog(); return; }
+  try {
+    await api('DELETE', `/api/posts/${currentThread}/comments/${c.id}`, { token: t.token });
+    currentComments = currentComments.filter((x) => x.id !== c.id);
+    const node = $(`.comment[data-comment-id="${c.id}"]`);
+    if (node) node.remove();
+    const box = $('#comments');
+    if (!currentComments.length) {
+      box.innerHTML = '';
+      box.appendChild(el('div', { className: 'empty-comments', textContent: '还没有评论。' }));
+    }
+  } catch (err) {
+    alert(err.message);
+  }
 }
 
 async function submitComment({ parentId, content, errNode, onDone }) {
@@ -584,14 +807,16 @@ function renderCommentTree(box, comments) {
   for (const r of kids.get(null) || []) walk(r, 0, box);
 }
 
-function renderReactions() {
+// --- Reactions ---
+
+function renderReactions(counts) {
   const box = $('#reactions');
   box.innerHTML = '';
-  if (currentThread == null || !currentReactions) return;
+  if (currentThread == null || !counts) return;
   const t = getToken();
   const mine = new Set(t ? (myReactionsFor(t.pseudonym)[currentThread] || []) : []);
   for (const kind of REACTION_KINDS) {
-    const count = currentReactions[kind] || 0;
+    const count = counts[kind] || 0;
     const pill = el('button', { type: 'button', className: 'reaction-pill' });
     pill.appendChild(el('span', { className: 'reaction-emoji', textContent: kind }));
     pill.appendChild(el('span', {
@@ -613,100 +838,225 @@ async function toggleReaction(kind) {
   try {
     const r = await api('POST', `/api/posts/${postId}/reactions`, { token: t.token, kind });
     if (currentThread !== postId) return;
-    currentReactions = r.reactions;
     setMyReaction(t.pseudonym, postId, kind, !wasMine);
-    renderReactions();
+    renderReactions(r.reactions);
   } catch (err) {
     if (/令牌/.test(err.message)) openDialog();
   }
 }
 
-async function openThread(id, { pushUrl = true } = {}) {
-  currentThread = id;
-  markActivePost(id);
-  if (pushUrl) syncUrl(id);
-  let data;
-  try {
-    data = await api('GET', `/api/posts/${id}`);
-  } catch (err) {
-    renderMissingThread(id, err.message);
+// --- Mentions ---
+
+async function refreshMentions({ silent = false, open = false } = {}) {
+  const t = getToken();
+  if (!t) {
+    lastMentions = [];
+    $('#mention-dot').hidden = true;
+    if (open) openMentionsDialog();
     return;
   }
-  const { post, comments, reactions } = data;
-  currentComments = comments.slice();
-  currentPostPseudonym = post.pseudonym;
-  currentReactions = reactions || Object.fromEntries(REACTION_KINDS.map((k) => [k, 0]));
-  $('#thread-title').innerHTML = '';
-  $('#thread-title').append(
-    el('span', { className: 'id-badge id-badge--lg', textContent: `#${post.id}` }),
-    el('span', { textContent: post.title }),
-  );
-  $('#thread-meta').dataset.pseudonym = post.pseudonym;
-  $('#thread-meta').textContent = fmtMeta(post.pseudonym, post.created_at);
-  $('#thread-body').innerHTML = '';
-  $('#thread-body').appendChild(renderMarkdown(post.content));
-  renderReactions();
-  const box = $('#comments');
+  try {
+    const r = await api('POST', '/api/mentions', { token: t.token });
+    lastMentions = r.mentions;
+    const seen = getMentionSeen(t.pseudonym);
+    const unread = lastMentions.filter((m) => m.created_at > seen).length;
+    $('#mention-dot').hidden = unread === 0;
+  } catch {
+    if (!silent) throw new Error('无法刷新提醒');
+  }
+  if (open) openMentionsDialog();
+}
+
+function openMentionsDialog() {
+  const t = getToken();
+  $('#mentions-pseudo').textContent = t ? t.pseudonym : '—';
+  const box = $('#mentions-list');
   box.innerHTML = '';
-  if (!comments.length) {
-    box.appendChild(el('div', { className: 'empty-comments', textContent: '还没有评论。' }));
+  if (!t) {
+    box.appendChild(el('div', { className: 'muted', textContent: '需要先领取发帖令牌。' }));
+  } else if (!lastMentions.length) {
+    box.appendChild(el('div', { className: 'muted', textContent: '过去 24 小时内没有新的提醒。' }));
   } else {
-    renderCommentTree(box, comments);
+    for (const m of lastMentions) box.appendChild(renderMentionItem(m));
   }
-  $('#comment-err').textContent = '';
-  $('#comment-form').reset();
-  showReader(VIEW.THREAD);
-  readerNode.scrollTo({ top: 0, behavior: 'instant' });
+  $('#mentions-dialog').hidden = false;
+  if (t) {
+    setMentionSeen(t.pseudonym, Date.now());
+    $('#mention-dot').hidden = true;
+  }
 }
 
-function renderMissingThread(id, message) {
-  currentComments = [];
-  currentPostPseudonym = null;
-  currentReactions = null;
-  $('#reactions').innerHTML = '';
-  $('#thread-title').innerHTML = '';
-  $('#thread-title').append(
-    el('span', { className: 'id-badge id-badge--lg', textContent: `#${id}` }),
-    el('span', { textContent: '帖子不存在' }),
-  );
-  $('#thread-meta').textContent = '';
-  $('#thread-body').innerHTML = '';
-  $('#thread-body').appendChild(el('p', { className: 'muted', textContent: message || '未找到该帖子。' }));
-  $('#comments').innerHTML = '';
-  $('#comment-err').textContent = '';
-  $('#comment-form').reset();
-  showReader(VIEW.THREAD);
-  readerNode.scrollTo({ top: 0, behavior: 'instant' });
-}
-
-window.addEventListener('popstate', () => {
-  if ($('#forum-view').hidden) return;
-  const id = postIdFromPath();
-  if (id == null) {
-    currentThread = null;
-    markActivePost(null);
-    showReader(VIEW.EMPTY);
-  } else if (id !== currentThread) {
-    openThread(id, { pushUrl: false }).catch(() => {});
-  }
-});
-
-const mainCommentForm = $('#comment-form');
-attachMentionAutocomplete(mainCommentForm.querySelector('textarea'));
-attachMentionAutocomplete($('#post-form').querySelector('input[name=title]'));
-attachMentionAutocomplete($('#post-form').querySelector('textarea'));
-
-mainCommentForm.addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const errNode = $('#comment-err');
-  errNode.textContent = '';
-  await submitComment({
-    parentId: null,
-    content: e.target.content.value,
-    errNode,
-    onDone: () => e.target.reset(),
+function renderMentionItem(m) {
+  const where = m.comment_id ? '评论里' : '帖子里';
+  const head = el('div', { className: 'mention-head' }, [
+    el('span', { className: 'mention-sender', textContent: `@${m.sender_pseudonym}` }),
+    el('span', { className: 'muted', textContent: ` 在「${m.post_title}」的${where}提到你` }),
+  ]);
+  const snippet = el('div', { className: 'mention-snippet', textContent: m.snippet });
+  const foot = el('div', { className: 'meta', textContent: fmtDate(m.created_at) });
+  const item = el('div', { className: 'mention-item-card' }, [head, snippet, foot]);
+  item.addEventListener('click', () => {
+    closeMentionsDialog();
+    openThread(m.post_id).catch(() => {});
   });
+  return item;
+}
+
+$('#mentions-btn').addEventListener('click', () => {
+  refreshMentions({ silent: true, open: true }).catch((e) => alert(e.message));
 });
+
+function schedulePollingMentions() {
+  stopPollingMentions();
+  mentionPollTimer = setInterval(() => {
+    refreshMentions({ silent: true }).catch(() => {});
+  }, MENTION_POLL_MS);
+}
+function stopPollingMentions() {
+  if (mentionPollTimer) { clearInterval(mentionPollTimer); mentionPollTimer = null; }
+}
+
+// --- Markdown + mention chips ---
+
+const SAFE_URL_RE = /^(https?:\/\/|\/p\/\d{1,10}(?:[?#].*)?$)/i;
+function safeUrl(u) { return typeof u === 'string' && SAFE_URL_RE.test(u.trim()) ? u.trim() : null; }
+
+function renderTextWithMentions(text) {
+  const frag = document.createDocumentFragment();
+  MENTION_IN_TEXT_RE.lastIndex = 0;
+  let last = 0, m;
+  while ((m = MENTION_IN_TEXT_RE.exec(text))) {
+    if (m.index > last) frag.appendChild(document.createTextNode(text.slice(last, m.index)));
+    if (m[1]) {
+      const p = m[1];
+      const chip = el('a', { className: 'mention', href: '#', textContent: `@${p}` });
+      chip.dataset.pseudonym = p;
+      chip.addEventListener('click', (e) => { e.preventDefault(); jumpToPseudonym(p); });
+      frag.appendChild(chip);
+    } else {
+      const id = parseInt(m[2], 10);
+      const chip = el('a', { className: 'mention post-ref', href: '#', textContent: `#${id}` });
+      chip.dataset.postId = String(id);
+      chip.addEventListener('click', (e) => { e.preventDefault(); openThread(id).catch(() => {}); });
+      frag.appendChild(chip);
+    }
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
+  return frag;
+}
+
+function renderInline(text, parent) {
+  const push = (s) => { if (s) parent.appendChild(renderTextWithMentions(s)); };
+  let i = 0;
+  while (i < text.length) {
+    const rest = text.slice(i);
+    let m = /^`([^`\n]+)`/.exec(rest);
+    if (m) { parent.appendChild(el('code', { textContent: m[1] })); i += m[0].length; continue; }
+    m = /^\[([^\]\n]+)\]\(([^)\s]+)\)/.exec(rest);
+    if (m) {
+      const url = safeUrl(m[2]);
+      if (url) {
+        const a = el('a', { href: url, rel: 'noopener noreferrer', target: '_blank' });
+        renderInline(m[1], a);
+        parent.appendChild(a);
+      } else {
+        push(m[0]);
+      }
+      i += m[0].length; continue;
+    }
+    m = /^\*\*([\s\S]+?)\*\*/.exec(rest);
+    if (m && !/\n/.test(m[1])) { const b = el('strong'); renderInline(m[1], b); parent.appendChild(b); i += m[0].length; continue; }
+    m = /^\*([^*\n]+?)\*/.exec(rest);
+    if (m) { const it = el('em'); renderInline(m[1], it); parent.appendChild(it); i += m[0].length; continue; }
+    const next = rest.slice(1).search(/[`*\[]/);
+    const chunk = next < 0 ? rest : rest.slice(0, next + 1);
+    push(chunk);
+    i += chunk.length;
+  }
+}
+
+function renderInlineWithBreaks(text, parent) {
+  const lines = text.split('\n');
+  lines.forEach((ln, idx) => {
+    renderInline(ln, parent);
+    if (idx < lines.length - 1) parent.appendChild(el('br'));
+  });
+}
+
+function renderMarkdown(text) {
+  const frag = document.createDocumentFragment();
+  if (typeof text !== 'string' || !text) return frag;
+  const lines = text.replace(/\r\n?/g, '\n').split('\n');
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    const fence = /^```([A-Za-z0-9_-]*)\s*$/.exec(line);
+    if (fence) {
+      const buf = [];
+      i++;
+      while (i < lines.length && !/^```\s*$/.test(lines[i])) { buf.push(lines[i]); i++; }
+      if (i < lines.length) i++;
+      const code = el('code', { textContent: buf.join('\n') });
+      if (fence[1]) code.className = `lang-${fence[1]}`;
+      frag.appendChild(el('pre', {}, [code]));
+      continue;
+    }
+    if (line.trim() === '') { i++; continue; }
+    const h = /^(#{1,3})\s+(.*)$/.exec(line);
+    if (h) {
+      const tag = `h${h[1].length}`;
+      const node = el(tag);
+      renderInline(h[2].trim(), node);
+      frag.appendChild(node);
+      i++;
+      continue;
+    }
+    if (/^>\s?/.test(line)) {
+      const buf = [];
+      while (i < lines.length && /^>\s?/.test(lines[i])) { buf.push(lines[i].replace(/^>\s?/, '')); i++; }
+      const node = el('blockquote');
+      renderInlineWithBreaks(buf.join('\n'), node);
+      frag.appendChild(node);
+      continue;
+    }
+    if (/^[-*]\s+/.test(line)) {
+      const ul = el('ul');
+      while (i < lines.length && /^[-*]\s+/.test(lines[i])) {
+        const li = el('li');
+        renderInline(lines[i].replace(/^[-*]\s+/, ''), li);
+        ul.appendChild(li);
+        i++;
+      }
+      frag.appendChild(ul);
+      continue;
+    }
+    if (/^\d+\.\s+/.test(line)) {
+      const ol = el('ol');
+      while (i < lines.length && /^\d+\.\s+/.test(lines[i])) {
+        const li = el('li');
+        renderInline(lines[i].replace(/^\d+\.\s+/, ''), li);
+        ol.appendChild(li);
+        i++;
+      }
+      frag.appendChild(ol);
+      continue;
+    }
+    const buf = [];
+    while (i < lines.length && lines[i].trim() !== '' &&
+           !/^```/.test(lines[i]) && !/^#{1,3}\s+/.test(lines[i]) &&
+           !/^>\s?/.test(lines[i]) && !/^[-*]\s+/.test(lines[i]) &&
+           !/^\d+\.\s+/.test(lines[i])) {
+      buf.push(lines[i]); i++;
+    }
+    const p = el('p');
+    renderInlineWithBreaks(buf.join('\n'), p);
+    frag.appendChild(p);
+  }
+  return frag;
+}
+
+// --- Autocomplete for @ and # ---
 
 function attachMentionAutocomplete(textarea) {
   const pop = el('div', { className: 'mention-pop', hidden: true });
@@ -804,9 +1154,27 @@ function attachMentionAutocomplete(textarea) {
   };
 }
 
+const mainCommentForm = $('#comment-form');
+attachMentionAutocomplete(mainCommentForm.querySelector('textarea'));
+attachMentionAutocomplete($('#post-form').querySelector('input[name=title]'));
+attachMentionAutocomplete($('#post-form').querySelector('textarea'));
+
+mainCommentForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const errNode = $('#comment-err');
+  errNode.textContent = '';
+  await submitComment({
+    parentId: null,
+    content: e.target.content.value,
+    errNode,
+    onDone: () => e.target.reset(),
+  });
+});
+
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
   if (!$('#token-dialog').hidden) { closeDialog(); return; }
+  if (!$('#mentions-dialog').hidden) { closeMentionsDialog(); return; }
   if (currentView !== VIEW.EMPTY) closeReader();
 });
 
