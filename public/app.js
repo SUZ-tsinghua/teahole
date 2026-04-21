@@ -100,8 +100,23 @@ function fmtMeta(pseudonym, createdAt, editedAt) {
   const base = `${pseudonym} · ${fmtDate(createdAt)}`;
   return editedAt ? `${base} · 已编辑` : base;
 }
+// Deterministic hue in [0, 360) from an 8-char hex pseudonym. The hue
+// is inherited via a CSS custom property so author-colored text and
+// borders cascade into inner `.meta` nodes without extra selectors.
+function hueFromPseudonym(p) {
+  if (typeof p !== 'string' || p.length < 2) return 140;
+  const n = parseInt(p.slice(0, 6), 16);
+  return Number.isFinite(n) ? n % 360 : 140;
+}
+function applyIdHue(node, pseudonym) {
+  if (!node || !pseudonym) return;
+  node.dataset.pseudonym = pseudonym;
+  node.style.setProperty('--id-hue', String(hueFromPseudonym(pseudonym)));
+}
 function metaLine(pseudonym, createdAt, editedAt) {
-  return el('div', { className: 'meta', textContent: fmtMeta(pseudonym, createdAt, editedAt) });
+  const node = el('div', { className: 'meta', textContent: fmtMeta(pseudonym, createdAt, editedAt) });
+  applyIdHue(node, pseudonym);
+  return node;
 }
 
 const VIEW = { EMPTY: 'empty-view', THREAD: 'thread-view', COMPOSE: 'compose-view' };
@@ -165,16 +180,47 @@ function renderTokenBox() {
   }));
 }
 
+let tokenQuota = { remaining: null, max: null };
+
+function renderTokenQuota() {
+  const box = $('#token-quota');
+  box.innerHTML = '';
+  if (tokenQuota.remaining == null) return;
+  const exhausted = tokenQuota.remaining === 0;
+  box.append(
+    el('span', { className: 'token-quota-label', textContent: '今日剩余更换次数：' }),
+    el('strong', {
+      className: 'token-quota-count' + (exhausted ? ' is-zero' : ''),
+      textContent: String(tokenQuota.remaining),
+    }),
+    el('span', { className: 'token-quota-max', textContent: ` / ${tokenQuota.max}` }),
+  );
+  $('#new-token').disabled = exhausted;
+  $('#new-token').title = exhausted ? '今日令牌名额已用完，请明日再来' : '';
+}
+
+async function refreshQuota() {
+  try {
+    const me = await api('GET', '/api/me');
+    tokenQuota = { remaining: me.tokens_remaining, max: me.max_tokens_per_day };
+  } catch {}
+  renderTokenQuota();
+}
+
 function openDialog() {
   renderTokenBox();
   $('#token-err').textContent = '';
   $('#token-dialog').hidden = false;
+  renderTokenQuota();
+  refreshQuota();
 }
 function closeDialog() { $('#token-dialog').hidden = true; }
 function closeMentionsDialog() { $('#mentions-dialog').hidden = true; }
 function openConfirmRotate() {
   const t = getToken();
-  $('#confirm-rotate-old-pseudo').textContent = t ? t.pseudonym : '—';
+  const old = $('#confirm-rotate-old-pseudo');
+  old.textContent = t ? t.pseudonym : '—';
+  if (t) applyIdHue(old, t.pseudonym); else { delete old.dataset.pseudonym; old.style.removeProperty('--id-hue'); }
   $('#confirm-rotate-err').textContent = '';
   $('#confirm-rotate-dialog').hidden = false;
 }
@@ -194,6 +240,7 @@ document.addEventListener('click', (e) => {
 async function refreshMe() {
   try {
     const me = await api('GET', '/api/me');
+    tokenQuota = { remaining: me.tokens_remaining, max: me.max_tokens_per_day };
     $('#auth-view').hidden = true;
     $('#forum-view').hidden = false;
     $('#userbar').innerHTML = '';
@@ -247,12 +294,18 @@ async function issueNewToken(errNode) {
   try {
     const r = await api('POST', '/api/token');
     setToken({ token: r.token, pseudonym: r.pseudonym, expires_at: r.expires_at });
+    if (r.tokens_remaining != null) {
+      tokenQuota = { remaining: r.tokens_remaining, max: r.max_tokens_per_day };
+    }
     renderTokenBox();
     renderTokenChip();
+    renderTokenQuota();
     refreshMentions({ silent: true }).catch(() => {});
     return true;
   } catch (err) {
     errNode.textContent = err.message;
+    // Refresh on error so 429 (quota reached elsewhere) shows the true count.
+    refreshQuota();
     return false;
   }
 }
@@ -539,9 +592,10 @@ async function openThread(id, { pushUrl = true } = {}) {
   meta.innerHTML = '';
   if (deleted) {
     delete meta.dataset.pseudonym;
+    meta.style.removeProperty('--id-hue');
     meta.textContent = `已删除于 ${fmtDate(post.deleted_at)}`;
   } else {
-    meta.dataset.pseudonym = post.pseudonym;
+    applyIdHue(meta, post.pseudonym);
     meta.textContent = fmtMeta(post.pseudonym, post.created_at, post.edited_at);
   }
   $('#thread-body').innerHTML = '';
@@ -639,7 +693,7 @@ function renderComment(c, depth) {
     actions,
   ]);
   node.dataset.commentId = c.id;
-  node.dataset.pseudonym = c.pseudonym;
+  applyIdHue(node, c.pseudonym);
   node.style.setProperty('--depth', d);
   if (d > 0) node.classList.add('nested');
   return node;
@@ -879,7 +933,9 @@ async function refreshMentions({ silent = false, open = false } = {}) {
 
 function openMentionsDialog() {
   const t = getToken();
-  $('#mentions-pseudo').textContent = t ? t.pseudonym : '—';
+  const pseudo = $('#mentions-pseudo');
+  pseudo.textContent = t ? t.pseudonym : '—';
+  if (t) applyIdHue(pseudo, t.pseudonym); else { delete pseudo.dataset.pseudonym; pseudo.style.removeProperty('--id-hue'); }
   const box = $('#mentions-list');
   box.innerHTML = '';
   if (!t) {
@@ -898,8 +954,10 @@ function openMentionsDialog() {
 
 function renderMentionItem(m) {
   const where = m.comment_id ? '评论里' : '帖子里';
+  const sender = el('span', { className: 'mention-sender', textContent: `@${m.sender_pseudonym}` });
+  applyIdHue(sender, m.sender_pseudonym);
   const head = el('div', { className: 'mention-head' }, [
-    el('span', { className: 'mention-sender', textContent: `@${m.sender_pseudonym}` }),
+    sender,
     el('span', { className: 'muted', textContent: ` 在「${m.post_title}」的${where}提到你` }),
   ]);
   const snippet = el('div', { className: 'mention-snippet', textContent: m.snippet });
@@ -940,7 +998,7 @@ function renderTextWithMentions(text) {
     if (m[1]) {
       const p = m[1];
       const chip = el('a', { className: 'mention', href: '#', textContent: `@${p}` });
-      chip.dataset.pseudonym = p;
+      applyIdHue(chip, p);
       chip.addEventListener('click', (e) => { e.preventDefault(); jumpToPseudonym(p); });
       frag.appendChild(chip);
     } else {

@@ -603,6 +603,67 @@ main#app { height: calc(100vh - var(--nav-h)); overflow: hidden; position: relat
 }
 :root[data-theme="light"] .meta { color: var(--magenta); }
 
+/* Per-pseudonym color. Each DOM node carrying a `--id-hue` custom
+   property (set via applyIdHue in app.js) renders in that hue; children
+   that also have `--id-hue` override. Post-refs (#id) keep cyan. */
+.meta[data-pseudonym] {
+  color: hsl(var(--id-hue, 140) 85% 64%);
+  text-shadow: 0 0 6px hsla(var(--id-hue, 140), 85%, 55%, 0.45);
+}
+:root[data-theme="light"] .meta[data-pseudonym] {
+  color: hsl(var(--id-hue, 140) 55% 36%);
+  text-shadow: none;
+}
+.comment[data-pseudonym] {
+  border-left: 2px solid hsl(var(--id-hue, 140) 70% 48%);
+  padding-left: 10px;
+}
+:root[data-theme="light"] .comment[data-pseudonym] {
+  border-left-color: hsl(var(--id-hue, 140) 55% 42%);
+}
+
+.mention[data-pseudonym]:not(.post-ref) {
+  color: hsl(var(--id-hue, 140) 85% 64%);
+  background: hsla(var(--id-hue, 140), 85%, 60%, 0.14);
+  border-bottom-color: hsl(var(--id-hue, 140) 85% 64%);
+  text-shadow: 0 0 4px hsla(var(--id-hue, 140), 85%, 55%, 0.45);
+}
+:root[data-theme="light"] .mention[data-pseudonym]:not(.post-ref) {
+  color: hsl(var(--id-hue, 140) 55% 36%);
+  background: hsla(var(--id-hue, 140), 55%, 40%, 0.12);
+  border-bottom-color: hsl(var(--id-hue, 140) 55% 36%);
+  text-shadow: none;
+}
+.mention[data-pseudonym]:not(.post-ref):hover {
+  background: hsl(var(--id-hue, 140) 85% 60%);
+  color: var(--bg);
+  text-shadow: none;
+  border-bottom-color: transparent;
+}
+:root[data-theme="light"] .mention[data-pseudonym]:not(.post-ref):hover {
+  background: hsl(var(--id-hue, 140) 55% 36%);
+  color: var(--bg);
+}
+
+.mention-sender[data-pseudonym] {
+  color: hsl(var(--id-hue, 140) 85% 64%);
+  text-shadow: 0 0 6px hsla(var(--id-hue, 140), 85%, 55%, 0.45);
+}
+:root[data-theme="light"] .mention-sender[data-pseudonym] {
+  color: hsl(var(--id-hue, 140) 55% 36%);
+  text-shadow: none;
+}
+
+#mentions-pseudo[data-pseudonym], #confirm-rotate-old-pseudo[data-pseudonym] {
+  color: hsl(var(--id-hue, 140) 85% 64%);
+  text-shadow: 0 0 6px hsla(var(--id-hue, 140), 85%, 55%, 0.45);
+}
+:root[data-theme="light"] #mentions-pseudo[data-pseudonym],
+:root[data-theme="light"] #confirm-rotate-old-pseudo[data-pseudonym] {
+  color: hsl(var(--id-hue, 140) 55% 36%);
+  text-shadow: none;
+}
+
 .feed-empty {
   padding: 24px 16px;
   text-align: center;
@@ -1299,6 +1360,47 @@ button.ghost.small.danger:hover { background: var(--danger-soft); color: var(--d
   text-shadow: var(--accent-glow);
 }
 :root[data-theme="light"] #mentions-pseudo { text-shadow: none; color: var(--magenta); }
+
+/* Quota readout inside the token dialog. */
+.token-quota {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--muted);
+  letter-spacing: 0.3px;
+  margin: 0 0 14px;
+  padding: 8px 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  display: flex;
+  align-items: baseline;
+  gap: 2px;
+}
+.token-quota:empty { display: none; }
+.token-quota-label { color: var(--muted); }
+.token-quota-count {
+  color: var(--accent);
+  text-shadow: var(--accent-glow);
+  font-size: 13px;
+  font-weight: 700;
+  margin-left: 4px;
+}
+:root[data-theme="light"] .token-quota-count { text-shadow: none; color: var(--magenta); }
+.token-quota-count.is-zero {
+  color: var(--danger);
+  text-shadow: 0 0 8px var(--danger);
+}
+:root[data-theme="light"] .token-quota-count.is-zero { text-shadow: none; }
+.token-quota-max { color: var(--fg-dim); }
+
+#new-token:disabled {
+  background: var(--surface-2);
+  color: var(--muted);
+  cursor: not-allowed;
+  box-shadow: none;
+  text-shadow: none;
+}
+#new-token:disabled:hover { background: var(--surface-2); box-shadow: none; }
 
 /* Warning list inside the rotate-confirm dialog. */
 .warn-list {

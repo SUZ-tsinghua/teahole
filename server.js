@@ -233,6 +233,16 @@ const claimTokenSlotTx = db.transaction((userId, today) => {
   return { ok: true };
 });
 
+function quotaFor(userId) {
+  const row = Q.findUserQuota.get(userId);
+  const today = todayUTC();
+  const used = row && row.tokens_issued_date === today ? row.tokens_issued_count : 0;
+  return {
+    remaining: Math.max(0, MAX_TOKENS_PER_DAY - used),
+    max: MAX_TOKENS_PER_DAY,
+  };
+}
+
 // Sets tags for a post atomically: replace, then re-insert. Also used by
 // create + update flows.
 const setPostTagsTx = db.transaction((postId, tags) => {
@@ -444,7 +454,13 @@ app.post('/api/logout', (req, res) => {
 });
 
 app.get('/api/me', requireSession, (req, res) => {
-  res.json({ username: req.user.u, admin: !!req.user.a });
+  const q = quotaFor(req.user.uid);
+  res.json({
+    username: req.user.u,
+    admin: !!req.user.a,
+    tokens_remaining: q.remaining,
+    max_tokens_per_day: q.max,
+  });
 });
 
 // The only endpoint that knows who you are. It spends one of your daily
@@ -459,7 +475,14 @@ app.post('/api/token', requireSession, (req, res) => {
   const expiresAt = Date.now() + TOKEN_TTL_HOURS * 3600 * 1000;
   Q.insertToken.run(tokenHash, expiresAt);
 
-  res.json({ token, pseudonym: pseudonymFromHash(tokenHash), expires_at: expiresAt });
+  const q = quotaFor(req.user.uid);
+  res.json({
+    token,
+    pseudonym: pseudonymFromHash(tokenHash),
+    expires_at: expiresAt,
+    tokens_remaining: q.remaining,
+    max_tokens_per_day: q.max,
+  });
 });
 
 // Feed. Supports optional ?tag=xyz filter. Tags are attached in batch.
