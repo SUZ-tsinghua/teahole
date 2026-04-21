@@ -38,13 +38,42 @@ if (!process.env.JWT_SECRET) {
 }
 
 const app = express();
+
+// TRUST_PROXY=1 (or a CIDR list) if the server runs behind a reverse proxy
+// so req.ip reflects the real client. Off by default.
+if (process.env.TRUST_PROXY) app.set('trust proxy', process.env.TRUST_PROXY);
+
+// Strict CSP: all scripts/styles/images are same-origin. No inline scripts
+// (theme-init.js is a separate file so we don't need 'unsafe-inline').
+// frame-ancestors 'none' also covers clickjacking, obsoletes X-Frame-Options.
+const CSP = [
+  "default-src 'self'",
+  "script-src 'self'",
+  "style-src 'self'",
+  "img-src 'self' data:",
+  "connect-src 'self'",
+  "font-src 'self'",
+  "object-src 'none'",
+  "base-uri 'self'",
+  "form-action 'self'",
+  "frame-ancestors 'none'",
+].join('; ');
+app.use((req, res, next) => {
+  res.setHeader('Content-Security-Policy', CSP);
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'same-origin');
+  next();
+});
+
 app.use(express.json({ limit: '32kb' }));
 app.use(cookieParser());
 app.use(express.static(path.join(__dirname, 'public')));
 
 const Q = {
-  findUserByName:  db.prepare('SELECT id, password_hash, is_admin FROM users WHERE username = ?'),
-  usernameExists:  db.prepare('SELECT 1 FROM users WHERE username = ?'),
+  findUserByName:  db.prepare('SELECT id, username, password_hash, is_admin FROM users WHERE username = ? COLLATE NOCASE'),
+  usernameExists:  db.prepare('SELECT 1 FROM users WHERE username = ? COLLATE NOCASE'),
+  isUserAdmin:     db.prepare('SELECT is_admin FROM users WHERE id = ?'),
   insertUser:      db.prepare('INSERT INTO users (username, password_hash, created_at) VALUES (?, ?, ?)'),
   findUserQuota:   db.prepare('SELECT tokens_issued_date, tokens_issued_count FROM users WHERE id = ?'),
   bumpTokenCount:  db.prepare('UPDATE users SET tokens_issued_date = ?, tokens_issued_count = ? WHERE id = ?'),
@@ -52,6 +81,9 @@ const Q = {
   findToken:       db.prepare('SELECT expires_at FROM post_tokens WHERE token_hash = ?'),
   purgeTokens:     db.prepare('DELETE FROM post_tokens WHERE expires_at < ?'),
   purgeMentions:   db.prepare('DELETE FROM mentions WHERE created_at < ?'),
+  purgeRevoked:    db.prepare('DELETE FROM revoked_sessions WHERE expires_at < ?'),
+  findRevoked:     db.prepare('SELECT 1 FROM revoked_sessions WHERE jti = ?'),
+  insertRevoked:   db.prepare('INSERT OR IGNORE INTO revoked_sessions (jti, expires_at) VALUES (?, ?)'),
   // Clear author-edit fingerprints once the token they reference is gone.
   // Otherwise `posts.token_hash` / `comments.token_hash` outlive the purge
   // and become a permanent per-author linker in the DB.
@@ -94,6 +126,7 @@ const Q = {
   updatePost:      db.prepare('UPDATE posts SET title = ?, content = ?, edited_at = ? WHERE id = ? AND token_hash IS NOT NULL AND token_hash = ?'),
   updateComment:   db.prepare('UPDATE comments SET content = ?, edited_at = ? WHERE id = ? AND token_hash IS NOT NULL AND token_hash = ?'),
   deletePost:      db.prepare('DELETE FROM posts WHERE id = ?'),
+  deleteComment:   db.prepare('DELETE FROM comments WHERE id = ?'),
   deleteOwnPost:   db.prepare('DELETE FROM posts WHERE id = ? AND token_hash IS NOT NULL AND token_hash = ?'),
   deleteOwnCmt:    db.prepare('DELETE FROM comments WHERE id = ? AND token_hash IS NOT NULL AND token_hash = ?'),
   postExists:      db.prepare('SELECT 1 FROM posts WHERE id = ?'),
@@ -206,11 +239,57 @@ function hashToken(token) { return crypto.createHash('sha256').update(token).dig
 function pseudonymFromHash(h) { return h.slice(0, 8); }
 function todayUTC() { return new Date().toISOString().slice(0, 10); }
 
+// Simple in-memory rate limiter keyed by (endpoint, ip). Lazy eviction on
+// read plus a periodic sweep bound memory. Not distributed — for multiple
+// processes, front with a proxy that rate-limits.
+const RATE_WINDOW_MS = 60 * 1000;
+const rateBuckets = new Map();
+
+function rateLimit(key, limit, windowMs = RATE_WINDOW_MS) {
+  return (req, res, next) => {
+    const ip = req.ip || req.socket.remoteAddress || 'unknown';
+    const k = `${key}:${ip}`;
+    const now = Date.now();
+    let b = rateBuckets.get(k);
+    if (!b || b.resetAt < now) {
+      b = { count: 0, resetAt: now + windowMs };
+      rateBuckets.set(k, b);
+    }
+    if (b.count >= limit) {
+      res.setHeader('Retry-After', String(Math.ceil((b.resetAt - now) / 1000)));
+      return res.status(429).json({ error: '请求过于频繁，请稍后再试' });
+    }
+    b.count++;
+    next();
+  };
+}
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, b] of rateBuckets) if (b.resetAt < now) rateBuckets.delete(k);
+}, RATE_WINDOW_MS).unref();
+
 function requireSession(req, res, next) {
   const raw = req.cookies.session;
   if (!raw) return res.status(401).json({ error: '未登录' });
-  try { req.user = jwt.verify(raw, JWT_SECRET); next(); }
-  catch { res.status(401).json({ error: '会话无效或已过期' }); }
+  try {
+    const payload = jwt.verify(raw, JWT_SECRET);
+    if (payload.jti && Q.findRevoked.get(payload.jti)) {
+      return res.status(401).json({ error: '会话无效或已过期' });
+    }
+    req.user = payload;
+    next();
+  } catch {
+    res.status(401).json({ error: '会话无效或已过期' });
+  }
+}
+
+// Re-check admin against the users table. The JWT's `a` claim is a cache
+// that can go stale for up to SESSION_TTL_DAYS after a demote; gate any
+// destructive admin action behind a fresh DB check.
+function isLiveAdmin(uid) {
+  const row = Q.isUserAdmin.get(uid);
+  return !!(row && row.is_admin);
 }
 
 function parseId(req, res, key = 'id') {
@@ -265,7 +344,8 @@ function sanitizeFtsQuery(q) {
 }
 
 function issueSession(res, userId, username, isAdmin) {
-  const token = jwt.sign({ uid: userId, u: username, a: isAdmin }, JWT_SECRET, {
+  const jti = crypto.randomBytes(12).toString('hex');
+  const token = jwt.sign({ uid: userId, u: username, a: isAdmin, jti }, JWT_SECRET, {
     expiresIn: `${SESSION_TTL_DAYS}d`,
   });
   res.cookie('session', token, SESSION_COOKIE_OPTS);
@@ -298,19 +378,30 @@ const clearMentionsForComment = db.prepare(
 
 // Auth
 
-app.post('/api/register', async (req, res) => {
+app.post('/api/register', rateLimit('register', 5), async (req, res) => {
   const { username, password } = req.body || {};
   const err = validateCredentials(username, password);
   if (err) return res.status(400).json({ error: err });
   if (Q.usernameExists.get(username)) return res.status(409).json({ error: '用户名已被占用' });
 
   const hash = await bcrypt.hash(password, 12);
-  const info = Q.insertUser.run(username, hash, Date.now());
+  let info;
+  try {
+    info = Q.insertUser.run(username, hash, Date.now());
+  } catch (e) {
+    // Catches the concurrent-register race: two requests passed the
+    // usernameExists check and both tried to INSERT; the unique index
+    // rejects the second one.
+    if (e.code === 'SQLITE_CONSTRAINT_UNIQUE') {
+      return res.status(409).json({ error: '用户名已被占用' });
+    }
+    throw e;
+  }
   issueSession(res, info.lastInsertRowid, username, false);
   res.json({ ok: true });
 });
 
-app.post('/api/login', async (req, res) => {
+app.post('/api/login', rateLimit('login', 10), async (req, res) => {
   const { username, password } = req.body || {};
   if (typeof username !== 'string' || typeof password !== 'string') {
     return res.status(400).json({ error: '请求格式错误' });
@@ -318,11 +409,24 @@ app.post('/api/login', async (req, res) => {
   const row = Q.findUserByName.get(username);
   const ok = await bcrypt.compare(password, row ? row.password_hash : DUMMY_BCRYPT_HASH);
   if (!row || !ok) return res.status(401).json({ error: '用户名或密码错误' });
-  issueSession(res, row.id, username, !!row.is_admin);
+  // Use the DB's canonical casing, not whatever the client typed.
+  issueSession(res, row.id, row.username, !!row.is_admin);
   res.json({ ok: true });
 });
 
 app.post('/api/logout', (req, res) => {
+  // Best-effort revoke: if the cookie carries a verifiable JWT with a jti,
+  // record it so the same cookie can't be replayed. Ignore decode failures
+  // — clearing the cookie is enough for a cooperating client.
+  const raw = req.cookies.session;
+  if (raw) {
+    try {
+      const payload = jwt.verify(raw, JWT_SECRET);
+      if (payload.jti && payload.exp) {
+        Q.insertRevoked.run(payload.jti, payload.exp * 1000);
+      }
+    } catch {}
+  }
   res.clearCookie('session', SESSION_COOKIE_OPTS);
   res.json({ ok: true });
 });
@@ -513,7 +617,7 @@ app.put('/api/posts/:pid/comments/:id', requireSession, (req, res) => {
 app.delete('/api/posts/:id', requireSession, (req, res) => {
   const id = parseId(req, res); if (id == null) return;
   const { token } = req.body || {};
-  if (req.user.a) {
+  if (req.user.a && isLiveAdmin(req.user.uid)) {
     const info = Q.deletePost.run(id);
     if (info.changes === 0) return res.status(404).json({ error: '未找到' });
     return res.json({ ok: true });
@@ -534,8 +638,8 @@ app.delete('/api/posts/:pid/comments/:id', requireSession, (req, res) => {
   const { token } = req.body || {};
   const existing = Q.getComment.get(id);
   if (!existing || existing.post_id !== postId) return res.status(404).json({ error: '未找到' });
-  if (req.user.a) {
-    db.prepare('DELETE FROM comments WHERE id = ?').run(id);
+  if (req.user.a && isLiveAdmin(req.user.uid)) {
+    Q.deleteComment.run(id);
     return res.json({ ok: true });
   }
   const resolved = resolveToken(token);
@@ -641,9 +745,11 @@ function rotate() {
   const ph = Q.orphanPostHashes.run();
   const ch = Q.orphanCmtHashes.run();
   const m = Q.purgeMentions.run(mentionCutoff);
-  if (t.changes > 0 || m.changes > 0 || ph.changes > 0 || ch.changes > 0) {
+  const r = Q.purgeRevoked.run(now);
+  if (t.changes + m.changes + ph.changes + ch.changes + r.changes > 0) {
     console.log(
       `[rotate] purged ${t.changes} tokens, ${m.changes} mentions, ` +
+      `${r.changes} revoked sessions, ` +
       `orphaned ${ph.changes} post / ${ch.changes} comment hashes`
     );
   }

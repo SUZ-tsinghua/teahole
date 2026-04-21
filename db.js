@@ -97,6 +97,15 @@ CREATE VIRTUAL TABLE IF NOT EXISTS posts_fts USING fts5(
   title, content, content='posts', content_rowid='id', tokenize='trigram'
 );
 
+-- Revoked JWTs. Logout inserts the session's jti so requireSession can
+-- reject it even though the JWT is otherwise still valid. expires_at
+-- matches the original JWT exp so rotate() can prune.
+CREATE TABLE IF NOT EXISTS revoked_sessions (
+  jti TEXT PRIMARY KEY,
+  expires_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_revoked_sessions_exp ON revoked_sessions(expires_at);
+
 CREATE TRIGGER IF NOT EXISTS posts_ai AFTER INSERT ON posts BEGIN
   INSERT INTO posts_fts(rowid, title, content) VALUES (new.id, new.title, new.content);
 END;
@@ -142,6 +151,20 @@ const ftsCount = db.prepare('SELECT count(*) AS n FROM posts_fts').get().n;
 const postCount = db.prepare('SELECT count(*) AS n FROM posts').get().n;
 if (ftsCount === 0 && postCount > 0) {
   db.exec("INSERT INTO posts_fts(posts_fts) VALUES('rebuild')");
+}
+
+// Case-insensitive username uniqueness. Prevents `Alice` and `alice` from
+// both registering. Will fail to create if a pre-existing DB already has
+// case-variant duplicates — we log and move on rather than crash.
+try {
+  db.exec(
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_nocase ON users(username COLLATE NOCASE)'
+  );
+} catch (e) {
+  console.warn(
+    '[warn] could not create username NOCASE unique index — dedupe existing users first:',
+    e.message
+  );
 }
 
 module.exports = db;

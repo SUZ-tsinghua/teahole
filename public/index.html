@@ -5,15 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>匿名论坛</title>
 <link rel="stylesheet" href="/style.css">
-<script>
-  (function () {
-    try {
-      var t = localStorage.getItem('anonforum.theme');
-      if (!t) t = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
-      document.documentElement.setAttribute('data-theme', t);
-    } catch (e) {}
-  })();
-</script>
+<script src="/theme-init.js"></script>
 </head>
 <body>
 <header>
