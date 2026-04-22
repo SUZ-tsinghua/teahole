@@ -250,15 +250,29 @@ const Q = {
      ORDER BY s.created_at DESC LIMIT ${FEED_LIMIT}`
   ),
   listChannelPrefs: db.prepare(
-    'SELECT channel_id, pinned, muted FROM user_channel_prefs WHERE user_id = ?'
+    'SELECT channel_id, pinned, muted, last_seen_at FROM user_channel_prefs WHERE user_id = ?'
   ),
   upsertChannelPref: db.prepare(
     `INSERT INTO user_channel_prefs (user_id, channel_id, pinned, muted)
      VALUES (?, ?, ?, ?)
      ON CONFLICT(user_id, channel_id) DO UPDATE SET pinned = excluded.pinned, muted = excluded.muted`
   ),
+  markChannelSeen: db.prepare(
+    `INSERT INTO user_channel_prefs (user_id, channel_id, last_seen_at)
+     VALUES (?, ?, ?)
+     ON CONFLICT(user_id, channel_id) DO UPDATE SET last_seen_at = excluded.last_seen_at`
+  ),
   deleteChannelPref: db.prepare(
     'DELETE FROM user_channel_prefs WHERE user_id = ? AND channel_id = ?'
+  ),
+  channelUnreadCounts: db.prepare(
+    `SELECT c.id AS channel_id,
+       (SELECT COUNT(*) FROM posts p
+        WHERE p.channel_id = c.id AND p.deleted_at IS NULL
+          AND p.created_at > COALESCE(pref.last_seen_at, 0)) AS unread
+     FROM channels c
+     LEFT JOIN user_channel_prefs pref
+       ON pref.channel_id = c.id AND pref.user_id = ?`
   ),
   maxCommentId: db.prepare('SELECT COALESCE(MAX(id), 0) AS max FROM comments WHERE post_id = ?'),
   upsertFollow: db.prepare(
@@ -906,10 +920,22 @@ app.delete('/api/followed/:id', requireSession, (req, res) => {
   res.json({ ok: true, followed: false });
 });
 
-// Per-user channel prefs: pinned + muted. Reader-side only; never
-// joined into feed/thread responses. Client fetches once on login.
+// Per-user channel prefs: pinned + muted + last-seen. Reader-side
+// only; never joined into feed/thread responses. Client fetches once
+// on login, then re-fetches unread counts alongside the mention poll.
 app.get('/api/channel-prefs', requireSession, (req, res) => {
   res.json(Q.listChannelPrefs.all(req.user.uid));
+});
+
+app.get('/api/channel-unread', requireSession, (req, res) => {
+  res.json(Q.channelUnreadCounts.all(req.user.uid));
+});
+
+app.post('/api/channels/:id/seen', requireSession, (req, res) => {
+  const id = parseId(req, res); if (id == null) return;
+  if (!Q.getChannelById.get(id)) return res.status(404).json({ error: '频道不存在' });
+  Q.markChannelSeen.run(req.user.uid, id, Date.now());
+  res.json({ ok: true });
 });
 
 app.post('/api/channel-prefs/:id', requireSession, (req, res) => {

@@ -132,14 +132,15 @@ CREATE TABLE IF NOT EXISTS followed_posts (
   FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE
 );
 
--- Per-user channel preferences (pinned / muted). Reader-side state
--- only; purely a display preference. Each flag is 0/1 so a single row
--- can hold both. Cascades on user + channel delete.
+-- Per-user channel preferences (pinned / muted / last-seen). Reader-
+-- side state only; purely a display / unread-counter preference.
+-- Cascades on user + channel delete.
 CREATE TABLE IF NOT EXISTS user_channel_prefs (
   user_id INTEGER NOT NULL,
   channel_id INTEGER NOT NULL,
   pinned INTEGER NOT NULL DEFAULT 0,
   muted INTEGER NOT NULL DEFAULT 0,
+  last_seen_at INTEGER,
   PRIMARY KEY (user_id, channel_id),
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
   FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE
@@ -223,6 +224,11 @@ if (!postCols.includes('channel_id')) {
 }
 db.exec('CREATE INDEX IF NOT EXISTS idx_posts_deleted ON posts(deleted_at)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_posts_channel ON posts(channel_id)');
+
+const prefCols = columnsOf('user_channel_prefs');
+if (prefCols.length && !prefCols.includes('last_seen_at')) {
+  db.exec('ALTER TABLE user_channel_prefs ADD COLUMN last_seen_at INTEGER');
+}
 
 const channelCount = db.prepare('SELECT count(*) AS n FROM channels').get().n;
 if (channelCount === 0) {

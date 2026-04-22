@@ -155,6 +155,8 @@ let channelPrefs = new Map();
 let mutedExpanded = false;
 let followedIds = new Set();
 let followedUnreadTotal = 0;
+// channelId -> unread post count since last visit.
+let channelUnread = new Map();
 let isAdmin = false;
 let currentUsername = null;
 let adminHandles = [];
@@ -378,6 +380,7 @@ async function refreshMe() {
     await loadBulletins();
     await loadSavedIds();
     await loadChannelPrefs();
+    await loadChannelUnread();
     await loadFollowed();
     await loadFeed();
     loadTags().catch(() => {});
@@ -577,6 +580,7 @@ async function filterByChannel(channelId) {
   filterState = { kind: 'channel', value: channelId };
   $('#search-input').value = '';
   $('#search-clear').hidden = true;
+  markChannelSeen(channelId).catch(() => {});
   await loadFeed();
 }
 
@@ -597,6 +601,24 @@ async function loadChannelPrefs() {
   renderChannelList();
 }
 
+async function loadChannelUnread() {
+  try {
+    const rows = await api('GET', '/api/channel-unread');
+    channelUnread = new Map(rows.map((r) => [r.channel_id, r.unread]));
+  } catch {
+    channelUnread = new Map();
+  }
+  renderChannelList();
+}
+
+async function markChannelSeen(channelId) {
+  try {
+    await api('POST', `/api/channels/${channelId}/seen`);
+    channelUnread.set(channelId, 0);
+    renderChannelList();
+  } catch {}
+}
+
 function channelPrefFor(id) {
   return channelPrefs.get(id) || { pinned: false, muted: false };
 }
@@ -612,16 +634,25 @@ async function setChannelPref(channelId, next) {
 
 function makeChannelPillButton(ch, activeId, opts = {}) {
   const pref = channelPrefFor(ch.id);
+  const unread = channelUnread.get(ch.id) || 0;
   const btn = el('button', { type: 'button', className: 'channel-pill' });
   if (activeId === ch.id) btn.classList.add('is-active');
   if (pref.pinned) btn.classList.add('is-pinned');
   if (pref.muted) btn.classList.add('is-muted');
+  if (unread > 0 && !pref.muted) btn.classList.add('has-unread');
   btn.title = ch.description || ch.name;
   btn.append(
     el('span', { className: 'channel-hash', textContent: pref.pinned ? '📌' : '#' }),
     el('span', { className: 'channel-name', textContent: ch.name }),
-    el('span', { className: 'channel-count', textContent: String(ch.post_count || 0) }),
   );
+  if (unread > 0 && !pref.muted) {
+    btn.appendChild(el('span', {
+      className: 'channel-unread-badge',
+      textContent: unread > 99 ? '99+' : String(unread),
+    }));
+  } else {
+    btn.appendChild(el('span', { className: 'channel-count', textContent: String(ch.post_count || 0) }));
+  }
   btn.addEventListener('click', () => filterByChannel(ch.id));
 
   const pinBtn = el('span', {
@@ -1608,6 +1639,7 @@ function schedulePollingMentions() {
   mentionPollTimer = setInterval(() => {
     refreshMentions({ silent: true }).catch(() => {});
     loadFollowed().catch(() => {});
+    loadChannelUnread().catch(() => {});
   }, MENTION_POLL_MS);
 }
 function stopPollingMentions() {

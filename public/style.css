@@ -545,6 +545,21 @@ button.ghost.small.is-followed {
   color: var(--accent);
   border-color: var(--accent-soft);
 }
+.channel-unread-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 5px;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--bg);
+  background: var(--accent);
+  border-radius: 999px;
+  font-variant-numeric: tabular-nums;
+}
+.channel-pill.has-unread .channel-name { color: var(--fg); font-weight: 500; }
 .follow-badge {
   display: inline-block;
   margin-left: 4px;
