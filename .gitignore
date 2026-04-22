@@ -6,3 +6,7 @@ data.db-shm
 .env
 *.log
 .DS_Store
+
+.claude/
+AGENTS.md
+uploads/

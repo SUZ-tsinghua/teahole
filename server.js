@@ -4,6 +4,9 @@ const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const path = require('path');
+const fs = require('fs');
+const multer = require('multer');
+const sharp = require('sharp');
 const db = require('./db');
 
 const PORT = Number(process.env.PORT) || 3000;
@@ -19,6 +22,15 @@ const SEARCH_MIN_CHARS = 3;
 const MENTIONS_LIMIT = 50;
 const RSS_LIMIT = 50;
 const MAX_TAGS_PER_POST = 5;
+const MAX_UPLOAD_BYTES = 4 * 1024 * 1024;
+const UPLOAD_DIR = path.join(__dirname, 'uploads');
+const UPLOAD_EXT_FOR_MIME = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' };
+const UPLOAD_NAME_RE = /^[a-f0-9]{64}\.(jpg|png|webp)$/;
+if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+const uploadMiddleware = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_UPLOAD_BYTES, files: 1 },
+});
 const TAG_RE = /^[a-z0-9_-]{1,24}$/;
 const CHANNEL_SLUG_RE = /^[a-z0-9_-]{1,32}$/;
 const CHANNEL_NAME_MAX = 60;
@@ -863,6 +875,50 @@ app.delete('/api/posts/:pid/comments/:id', requireSession, (req, res) => {
   const info = Q.deleteOwnCmt.run(id, resolved.tokenHash);
   if (info.changes === 0) return res.status(403).json({ error: '只有作者可以删除' });
   res.json({ ok: true });
+});
+
+// Image uploads. Content-addressed by sha256(body) — files live under
+// uploads/<hash>.<ext> with no user_id anywhere, matching the CLAUDE.md
+// rule that attachments must stay content-scoped. Sharp re-encodes the
+// payload, which strips EXIF and any other embedded metadata along the
+// way. The caller still needs a valid posting token (or admin session)
+// so random session holders can't silently park files in the bucket.
+app.post('/api/uploads', requireSession, (req, res) => {
+  uploadMiddleware.single('image')(req, res, async (err) => {
+    if (err) {
+      const msg = err.code === 'LIMIT_FILE_SIZE' ? '文件过大（上限 4 MB）' : '上传失败';
+      return res.status(400).json({ error: msg });
+    }
+    const { token } = req.body || {};
+    const resolved = resolveToken(token);
+    const admin = isLiveAdmin(req.user.uid);
+    if (!resolved && !admin) return res.status(401).json({ error: '发帖令牌无效或已过期' });
+    if (!req.file) return res.status(400).json({ error: '没有图片' });
+    const ext = UPLOAD_EXT_FOR_MIME[req.file.mimetype];
+    if (!ext) return res.status(400).json({ error: '只支持 JPG / PNG / WebP' });
+    try {
+      const pipeline = sharp(req.file.buffer, { failOn: 'error' }).rotate();
+      const out = ext === 'png' ? await pipeline.png().toBuffer()
+                : ext === 'webp' ? await pipeline.webp().toBuffer()
+                : await pipeline.jpeg({ quality: 88, mozjpeg: true }).toBuffer();
+      const hash = crypto.createHash('sha256').update(out).digest('hex');
+      const fileName = `${hash}.${ext}`;
+      const filePath = path.join(UPLOAD_DIR, fileName);
+      if (!fs.existsSync(filePath)) fs.writeFileSync(filePath, out);
+      res.json({ url: `/api/uploads/${fileName}` });
+    } catch {
+      res.status(400).json({ error: '无法解析图片' });
+    }
+  });
+});
+
+app.get('/api/uploads/:name', requireSession, (req, res) => {
+  if (!UPLOAD_NAME_RE.test(req.params.name)) return res.status(404).end();
+  const fp = path.join(UPLOAD_DIR, req.params.name);
+  if (!fs.existsSync(fp)) return res.status(404).end();
+  // Long cache is safe — filenames are immutable content hashes.
+  res.setHeader('Cache-Control', 'private, max-age=31536000, immutable');
+  res.sendFile(fp);
 });
 
 // Tags list. Used for the sidebar tag chips.

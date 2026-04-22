@@ -141,6 +141,10 @@
             <select name="channel_id" id="compose-channel"></select>
           </label>
           <textarea name="content" placeholder="分享点什么..." required maxlength="10000"></textarea>
+          <div class="compose-toolbar">
+            <button type="button" id="post-image-btn" class="ghost small">📷 插入图片</button>
+            <span id="post-image-status" class="muted compose-hint"></span>
+          </div>
           <input name="tags" placeholder="标签（空格分隔，最多 5 个，如 feedback bug-report）" maxlength="200">
           <div class="form-actions">
             <button type="submit" id="post-submit">匿名发布</button>

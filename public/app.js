@@ -974,6 +974,54 @@ function closeBulletinDialog() { $('#bulletin-dialog').hidden = true; }
 $('#new-bulletin-btn').addEventListener('click', () => openBulletinDialog(null));
 $('#saved-filter-btn').addEventListener('click', () => filterBySaved());
 
+// Image uploads: content-addressed, no user_id storage. The server
+// strips EXIF via sharp before writing to disk.
+async function uploadImage(file) {
+  const t = getToken();
+  const body = new FormData();
+  body.append('image', file);
+  if (t) body.append('token', t.token);
+  const res = await fetch('/api/uploads', { method: 'POST', body });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data.url;
+}
+
+function insertAtCursor(textarea, text) {
+  const v = textarea.value;
+  const start = textarea.selectionStart ?? v.length;
+  const end = textarea.selectionEnd ?? v.length;
+  textarea.value = v.slice(0, start) + text + v.slice(end);
+  const pos = start + text.length;
+  textarea.setSelectionRange(pos, pos);
+  textarea.focus();
+}
+
+$('#post-image-btn').addEventListener('click', () => {
+  const status = $('#post-image-status');
+  status.textContent = '';
+  const picker = el('input', {
+    type: 'file', accept: 'image/jpeg,image/png,image/webp', hidden: true,
+  });
+  document.body.appendChild(picker);
+  picker.addEventListener('change', async () => {
+    const file = picker.files && picker.files[0];
+    picker.remove();
+    if (!file) return;
+    if (!getToken() && !isAdmin) { $('#post-err').textContent = '请先获取发帖令牌。'; openDialog(); return; }
+    status.textContent = '上传中…';
+    try {
+      const url = await uploadImage(file);
+      const ta = $('#post-form').querySelector('textarea[name=content]');
+      insertAtCursor(ta, `![](${url})\n`);
+      status.textContent = '已插入到正文。EXIF 已被剥离。';
+    } catch (err) {
+      status.textContent = err.message;
+    }
+  });
+  picker.click();
+});
+
 $('#bulletin-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const f = e.target;
@@ -1662,7 +1710,9 @@ function stopPollingMentions() {
 // --- Markdown + mention chips ---
 
 const SAFE_URL_RE = /^(https?:\/\/|\/p\/\d{1,10}(?:[?#].*)?$)/i;
+const SAFE_IMG_URL_RE = /^\/api\/uploads\/[a-f0-9]{64}\.(jpg|png|webp)$/;
 function safeUrl(u) { return typeof u === 'string' && SAFE_URL_RE.test(u.trim()) ? u.trim() : null; }
+function safeImgUrl(u) { return typeof u === 'string' && SAFE_IMG_URL_RE.test(u.trim()) ? u.trim() : null; }
 
 function renderTextWithMentions(text) {
   const frag = document.createDocumentFragment();
@@ -1701,6 +1751,16 @@ function renderInline(text, parent) {
     const rest = text.slice(i);
     let m = /^`([^`\n]+)`/.exec(rest);
     if (m) { parent.appendChild(el('code', { textContent: m[1] })); i += m[0].length; continue; }
+    m = /^!\[([^\]\n]*)\]\(([^)\s]+)\)/.exec(rest);
+    if (m) {
+      const url = safeImgUrl(m[2]);
+      if (url) {
+        parent.appendChild(el('img', { src: url, alt: m[1] || '', className: 'md-img', loading: 'lazy' }));
+      } else {
+        push(m[0]);
+      }
+      i += m[0].length; continue;
+    }
     m = /^\[([^\]\n]+)\]\(([^)\s]+)\)/.exec(rest);
     if (m) {
       const url = safeUrl(m[2]);
@@ -1717,8 +1777,12 @@ function renderInline(text, parent) {
     if (m && !/\n/.test(m[1])) { const b = el('strong'); renderInline(m[1], b); parent.appendChild(b); i += m[0].length; continue; }
     m = /^\*([^*\n]+?)\*/.exec(rest);
     if (m) { const it = el('em'); renderInline(m[1], it); parent.appendChild(it); i += m[0].length; continue; }
-    const next = rest.slice(1).search(/[`*\[]/);
-    const chunk = next < 0 ? rest : rest.slice(0, next + 1);
+    // Stop a text chunk before the next markdown trigger. `!` must
+    // detach from the chunk so the next iteration can spot `![`.
+    const inSlice = rest.slice(1);
+    const stop = /!?\[|[`*]/.exec(inSlice);
+    if (!stop) { push(rest); i += rest.length; continue; }
+    const chunk = rest.slice(0, stop.index + 1);
     push(chunk);
     i += chunk.length;
   }
