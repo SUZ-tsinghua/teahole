@@ -249,6 +249,17 @@ const Q = {
      WHERE s.user_id = ? AND p.deleted_at IS NULL
      ORDER BY s.created_at DESC LIMIT ${FEED_LIMIT}`
   ),
+  listChannelPrefs: db.prepare(
+    'SELECT channel_id, pinned, muted FROM user_channel_prefs WHERE user_id = ?'
+  ),
+  upsertChannelPref: db.prepare(
+    `INSERT INTO user_channel_prefs (user_id, channel_id, pinned, muted)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(user_id, channel_id) DO UPDATE SET pinned = excluded.pinned, muted = excluded.muted`
+  ),
+  deleteChannelPref: db.prepare(
+    'DELETE FROM user_channel_prefs WHERE user_id = ? AND channel_id = ?'
+  ),
 };
 
 const REACTION_KINDS = ['👍', '❤️', '😂', '😮', '😢', '🎉'];
@@ -848,6 +859,25 @@ app.delete('/api/saved/:id', requireSession, (req, res) => {
   const id = parseId(req, res); if (id == null) return;
   Q.deleteSaved.run(req.user.uid, id);
   res.json({ ok: true, saved: false });
+});
+
+// Per-user channel prefs: pinned + muted. Reader-side only; never
+// joined into feed/thread responses. Client fetches once on login.
+app.get('/api/channel-prefs', requireSession, (req, res) => {
+  res.json(Q.listChannelPrefs.all(req.user.uid));
+});
+
+app.post('/api/channel-prefs/:id', requireSession, (req, res) => {
+  const id = parseId(req, res); if (id == null) return;
+  if (!Q.getChannelById.get(id)) return res.status(404).json({ error: '频道不存在' });
+  const pinned = req.body && req.body.pinned ? 1 : 0;
+  const muted = req.body && req.body.muted ? 1 : 0;
+  if (!pinned && !muted) {
+    Q.deleteChannelPref.run(req.user.uid, id);
+  } else {
+    Q.upsertChannelPref.run(req.user.uid, id, pinned, muted);
+  }
+  res.json({ channel_id: id, pinned: !!pinned, muted: !!muted });
 });
 
 // Channels list with live post counts. Any logged-in user can read.

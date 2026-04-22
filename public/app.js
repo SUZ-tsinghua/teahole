@@ -150,6 +150,9 @@ let channels = [];
 let bulletins = [];
 let currentBulletin = null;
 let savedIds = new Set();
+// Per-user channel prefs: Map<channelId, { pinned, muted }>
+let channelPrefs = new Map();
+let mutedExpanded = false;
 let isAdmin = false;
 let currentUsername = null;
 let adminHandles = [];
@@ -371,6 +374,7 @@ async function refreshMe() {
     await loadChannels();
     await loadBulletins();
     await loadSavedIds();
+    await loadChannelPrefs();
     await loadFeed();
     loadTags().catch(() => {});
     showReader(VIEW.EMPTY);
@@ -579,6 +583,84 @@ async function loadChannels() {
   renderComposeChannels();
 }
 
+async function loadChannelPrefs() {
+  try {
+    const rows = await api('GET', '/api/channel-prefs');
+    channelPrefs = new Map(rows.map((r) => [r.channel_id, { pinned: !!r.pinned, muted: !!r.muted }]));
+  } catch {
+    channelPrefs = new Map();
+  }
+  renderChannelList();
+}
+
+function channelPrefFor(id) {
+  return channelPrefs.get(id) || { pinned: false, muted: false };
+}
+
+async function setChannelPref(channelId, next) {
+  try {
+    const r = await api('POST', `/api/channel-prefs/${channelId}`, next);
+    if (r.pinned || r.muted) channelPrefs.set(channelId, { pinned: r.pinned, muted: r.muted });
+    else channelPrefs.delete(channelId);
+    renderChannelList();
+  } catch (err) { alert(err.message); }
+}
+
+function makeChannelPillButton(ch, activeId, opts = {}) {
+  const pref = channelPrefFor(ch.id);
+  const btn = el('button', { type: 'button', className: 'channel-pill' });
+  if (activeId === ch.id) btn.classList.add('is-active');
+  if (pref.pinned) btn.classList.add('is-pinned');
+  if (pref.muted) btn.classList.add('is-muted');
+  btn.title = ch.description || ch.name;
+  btn.append(
+    el('span', { className: 'channel-hash', textContent: pref.pinned ? '📌' : '#' }),
+    el('span', { className: 'channel-name', textContent: ch.name }),
+    el('span', { className: 'channel-count', textContent: String(ch.post_count || 0) }),
+  );
+  btn.addEventListener('click', () => filterByChannel(ch.id));
+
+  const pinBtn = el('span', {
+    className: 'channel-pref-btn' + (pref.pinned ? ' is-on' : ''),
+    title: pref.pinned ? '取消置顶' : '置顶频道',
+    textContent: pref.pinned ? '📌' : '⇡',
+  });
+  pinBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    setChannelPref(ch.id, { pinned: !pref.pinned, muted: pref.muted && !pref.pinned ? false : pref.muted });
+  });
+  btn.appendChild(pinBtn);
+
+  const muteBtn = el('span', {
+    className: 'channel-pref-btn' + (pref.muted ? ' is-on' : ''),
+    title: pref.muted ? '取消静音' : '静音频道',
+    textContent: pref.muted ? '🔕' : '🔔',
+  });
+  muteBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    setChannelPref(ch.id, { pinned: pref.pinned && pref.muted ? false : pref.pinned, muted: !pref.muted });
+  });
+  btn.appendChild(muteBtn);
+
+  if (opts.adminCanDelete && ch.slug !== 'general') {
+    const del = el('span', { className: 'channel-del', title: '删除频道', textContent: '×' });
+    del.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      if (!confirm(`删除频道「${ch.name}」？该频道下的帖子会回到默认分区，不会被删除。`)) return;
+      try {
+        await api('DELETE', `/api/channels/${ch.id}`);
+        if (filterState.kind === 'channel' && filterState.value === ch.id) {
+          filterState = { kind: null, value: null };
+        }
+        await loadChannels();
+        await loadFeed();
+      } catch (err) { alert(err.message); }
+    });
+    btn.appendChild(del);
+  }
+  return btn;
+}
+
 function renderChannelList() {
   const box = $('#channel-list');
   if (!box) return;
@@ -588,33 +670,30 @@ function renderChannelList() {
     return;
   }
   const activeId = filterState.kind === 'channel' ? filterState.value : null;
+  const opts = { adminCanDelete: isAdmin };
+  const pinned = [], normal = [], muted = [];
   for (const ch of channels) {
-    const btn = el('button', { type: 'button', className: 'channel-pill' });
-    if (activeId === ch.id) btn.classList.add('is-active');
-    btn.title = ch.description || ch.name;
-    btn.append(
-      el('span', { className: 'channel-hash', textContent: '#' }),
-      el('span', { className: 'channel-name', textContent: ch.name }),
-      el('span', { className: 'channel-count', textContent: String(ch.post_count || 0) }),
-    );
-    btn.addEventListener('click', () => filterByChannel(ch.id));
-    if (isAdmin && ch.slug !== 'general') {
-      const del = el('span', { className: 'channel-del', title: '删除频道', textContent: '×' });
-      del.addEventListener('click', async (e) => {
-        e.stopPropagation();
-        if (!confirm(`删除频道「${ch.name}」？该频道下的帖子会回到默认分区，不会被删除。`)) return;
-        try {
-          await api('DELETE', `/api/channels/${ch.id}`);
-          if (filterState.kind === 'channel' && filterState.value === ch.id) {
-            filterState = { kind: null, value: null };
-          }
-          await loadChannels();
-          await loadFeed();
-        } catch (err) { alert(err.message); }
-      });
-      btn.appendChild(del);
+    const pref = channelPrefFor(ch.id);
+    if (pref.pinned) pinned.push(ch);
+    else if (pref.muted) muted.push(ch);
+    else normal.push(ch);
+  }
+  for (const ch of pinned) box.appendChild(makeChannelPillButton(ch, activeId, opts));
+  for (const ch of normal) box.appendChild(makeChannelPillButton(ch, activeId, opts));
+  if (muted.length) {
+    const header = el('button', {
+      type: 'button',
+      className: 'channel-muted-header',
+      textContent: mutedExpanded ? `▾ 静音 (${muted.length})` : `▸ 静音 (${muted.length})`,
+    });
+    header.addEventListener('click', () => {
+      mutedExpanded = !mutedExpanded;
+      renderChannelList();
+    });
+    box.appendChild(header);
+    if (mutedExpanded) {
+      for (const ch of muted) box.appendChild(makeChannelPillButton(ch, activeId, opts));
     }
-    box.appendChild(btn);
   }
 }
 

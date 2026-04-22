@@ -119,6 +119,19 @@ CREATE TABLE IF NOT EXISTS revoked_sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_revoked_sessions_exp ON revoked_sessions(expires_at);
 
+-- Per-user channel preferences (pinned / muted). Reader-side state
+-- only; purely a display preference. Each flag is 0/1 so a single row
+-- can hold both. Cascades on user + channel delete.
+CREATE TABLE IF NOT EXISTS user_channel_prefs (
+  user_id INTEGER NOT NULL,
+  channel_id INTEGER NOT NULL,
+  pinned INTEGER NOT NULL DEFAULT 0,
+  muted INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (user_id, channel_id),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE
+);
+
 -- Saved posts: reader-side bookmark against the account, not the token,
 -- so it survives token rotation. Keyed by (user_id, post_id); the row
 -- records WHO saved WHAT. This is a reader-side linkage only, never

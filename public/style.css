@@ -544,6 +544,35 @@ button.ghost.small.is-saved {
   color: var(--accent);
   border-color: var(--accent-soft);
 }
+.channel-pref-btn {
+  font-size: 12px;
+  opacity: 0;
+  padding: 0 2px;
+  transition: opacity 100ms ease, color 100ms ease;
+  cursor: pointer;
+  color: var(--muted);
+  line-height: 1;
+  border-radius: 4px;
+}
+.channel-pill:hover .channel-pref-btn { opacity: 0.7; }
+.channel-pref-btn:hover { opacity: 1 !important; color: var(--accent); }
+.channel-pref-btn.is-on { opacity: 1; color: var(--accent); }
+.channel-pill.is-muted { opacity: 0.55; }
+.channel-pill.is-muted .channel-name { font-style: italic; }
+.channel-pill.is-pinned .channel-hash { color: var(--accent); font-size: 12px; }
+.channel-muted-header {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  padding: 6px 10px;
+  font-size: 11px;
+  color: var(--muted);
+  cursor: pointer;
+  font-family: var(--sans);
+  letter-spacing: 0.04em;
+}
+.channel-muted-header:hover { color: var(--fg); }
 .bulletin-badge {
   display: inline-block;
   font-size: 11px;
