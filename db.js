@@ -119,6 +119,20 @@ CREATE TABLE IF NOT EXISTS revoked_sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_revoked_sessions_exp ON revoked_sessions(expires_at);
 
+-- Bulletins: admin-curated notices. Authored under the admin's username,
+-- same opt-in-public model as admin posts. Intentionally separate from
+-- posts so regular-member anonymous content and admin announcements
+-- don't share a table (and can't be confused via an ID collision).
+CREATE TABLE IF NOT EXISTS bulletins (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  author_username TEXT NOT NULL,
+  title TEXT NOT NULL,
+  content TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_bulletins_created ON bulletins(created_at);
+
 CREATE TRIGGER IF NOT EXISTS posts_ai AFTER INSERT ON posts BEGIN
   INSERT INTO posts_fts(rowid, title, content) VALUES (new.id, new.title, new.content);
 END;

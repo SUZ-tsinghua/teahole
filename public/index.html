@@ -58,6 +58,11 @@
       </div>
       <div id="filter-bar" class="filter-bar" hidden></div>
       <div class="sidebar-section-head">
+        <div class="sidebar-section-label">公告</div>
+        <button id="new-bulletin-btn" type="button" class="icon-btn subtle" hidden aria-label="新建公告" title="新建公告">＋</button>
+      </div>
+      <div id="bulletin-list" class="bulletin-list"></div>
+      <div class="sidebar-section-head">
         <div class="sidebar-section-label">频道</div>
         <button id="new-channel-btn" type="button" class="icon-btn subtle" hidden aria-label="新建频道" title="新建频道">＋</button>
       </div>
@@ -106,6 +111,15 @@
           </div>
           <div class="err" id="comment-err"></div>
         </form>
+      </article>
+
+      <article id="bulletin-view" class="reader-card" hidden>
+        <button class="back" data-close="reader">← 返回</button>
+        <div class="bulletin-badge">公告</div>
+        <h2 id="bulletin-title"></h2>
+        <div id="bulletin-meta" class="meta"></div>
+        <div id="bulletin-body" class="prose"></div>
+        <div id="bulletin-actions" class="thread-actions" hidden></div>
       </article>
 
       <article id="compose-view" class="reader-card" hidden>
@@ -176,6 +190,23 @@
           <button type="button" class="ghost" data-close="channel">取消</button>
         </div>
         <div class="err" id="channel-err"></div>
+      </form>
+    </div>
+  </div>
+
+  <div id="bulletin-dialog" class="dialog" hidden>
+    <div class="dialog-backdrop" data-close="bulletin"></div>
+    <div class="dialog-card">
+      <h2 id="bulletin-dialog-title">新建公告</h2>
+      <p class="muted">公告会显示在侧边栏，所有登录用户都能看到。公告由你本人（管理员）署名发布。</p>
+      <form id="bulletin-form" class="inline-form">
+        <input name="title" placeholder="标题" required maxlength="200">
+        <textarea name="content" placeholder="公告正文（支持 Markdown）" required maxlength="10000"></textarea>
+        <div class="row">
+          <button type="submit" id="bulletin-submit">发布公告</button>
+          <button type="button" class="ghost" data-close="bulletin">取消</button>
+        </div>
+        <div class="err" id="bulletin-err"></div>
       </form>
     </div>
   </div>

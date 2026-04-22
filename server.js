@@ -227,6 +227,19 @@ const Q = {
   getChannelById:   db.prepare('SELECT id, slug, name, description FROM channels WHERE id = ?'),
   insertChannel:    db.prepare('INSERT INTO channels (slug, name, description, created_at) VALUES (?, ?, ?, ?)'),
   deleteChannel:    db.prepare('DELETE FROM channels WHERE id = ?'),
+  listBulletins:    db.prepare(
+    'SELECT id, author_username, title, content, created_at, updated_at FROM bulletins ORDER BY created_at DESC LIMIT 50'
+  ),
+  getBulletin:      db.prepare(
+    'SELECT id, author_username, title, content, created_at, updated_at FROM bulletins WHERE id = ?'
+  ),
+  insertBulletin:   db.prepare(
+    'INSERT INTO bulletins (author_username, title, content, created_at) VALUES (?, ?, ?, ?)'
+  ),
+  updateBulletin:   db.prepare(
+    'UPDATE bulletins SET title = ?, content = ?, updated_at = ? WHERE id = ?'
+  ),
+  deleteBulletin:   db.prepare('DELETE FROM bulletins WHERE id = ?'),
 };
 
 const REACTION_KINDS = ['👍', '❤️', '😂', '😮', '😢', '🎉'];
@@ -846,6 +859,54 @@ app.delete('/api/channels/:id', requireSession, requireAdmin, (req, res) => {
   res.json({ ok: true });
 });
 
+// Bulletins: admin-curated notices. Any logged-in user can read; only
+// live admins can create/edit/delete. Kept separate from `posts` so the
+// anonymous-post privacy rules don't have to be reasoned about here.
+app.get('/api/bulletins', requireSession, (req, res) => {
+  res.json(Q.listBulletins.all());
+});
+
+app.get('/api/bulletins/:id', requireSession, (req, res) => {
+  const id = parseId(req, res); if (id == null) return;
+  const row = Q.getBulletin.get(id);
+  if (!row) return res.status(404).json({ error: '未找到' });
+  res.json(row);
+});
+
+app.post('/api/bulletins', requireSession, requireAdmin, (req, res) => {
+  const { title, content } = req.body || {};
+  const t = sanitizeText(title, 200);
+  const c = sanitizeText(content, 10000);
+  if (!t || !c) return res.status(400).json({ error: '标题和内容不能为空' });
+  const createdAt = Date.now();
+  const info = Q.insertBulletin.run(req.user.u, t, c, createdAt);
+  res.json({
+    id: info.lastInsertRowid,
+    author_username: req.user.u,
+    title: t, content: c, created_at: createdAt, updated_at: null,
+  });
+});
+
+app.put('/api/bulletins/:id', requireSession, requireAdmin, (req, res) => {
+  const id = parseId(req, res); if (id == null) return;
+  const { title, content } = req.body || {};
+  const t = sanitizeText(title, 200);
+  const c = sanitizeText(content, 10000);
+  if (!t || !c) return res.status(400).json({ error: '标题和内容不能为空' });
+  const updatedAt = Date.now();
+  const info = Q.updateBulletin.run(t, c, updatedAt, id);
+  if (info.changes === 0) return res.status(404).json({ error: '未找到' });
+  const row = Q.getBulletin.get(id);
+  res.json(row);
+});
+
+app.delete('/api/bulletins/:id', requireSession, requireAdmin, (req, res) => {
+  const id = parseId(req, res); if (id == null) return;
+  const info = Q.deleteBulletin.run(id);
+  if (info.changes === 0) return res.status(404).json({ error: '未找到' });
+  res.json({ ok: true });
+});
+
 // FTS5 search over post title+content. Trigram tokenizer = minimum 3 chars.
 app.get('/api/search', requireSession, (req, res) => {
   const q = sanitizeFtsQuery(req.query.q);
@@ -919,6 +980,13 @@ app.get('/api/feed.xml', requireSession, (req, res) => {
 // fetches /api/posts/:id and renders a "not found" state if needed, so
 // this handler does not leak whether `id` exists.
 app.get('/p/:id(\\d+)', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+// Bulletins are admin-authored + public by design, but the same
+// existence-oblivious rule applies so deep-link probes can't learn a
+// bulletin's status before login.
+app.get('/b/:id(\\d+)', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 

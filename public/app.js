@@ -133,7 +133,7 @@ function metaLine(pseudonym, createdAt, editedAt) {
   return node;
 }
 
-const VIEW = { EMPTY: 'empty-view', THREAD: 'thread-view', COMPOSE: 'compose-view' };
+const VIEW = { EMPTY: 'empty-view', THREAD: 'thread-view', COMPOSE: 'compose-view', BULLETIN: 'bulletin-view' };
 const viewNodes = Object.fromEntries(Object.values(VIEW).map((id) => [id, $('#' + id)]));
 const readerNode = $('#reader');
 let currentView = null;
@@ -147,6 +147,8 @@ let filterState = { kind: null, value: null };
 let mentionPollTimer = null;
 let lastMentions = [];
 let channels = [];
+let bulletins = [];
+let currentBulletin = null;
 let isAdmin = false;
 let currentUsername = null;
 let adminHandles = [];
@@ -197,18 +199,26 @@ function showReader(which) {
 
 function closeReader() {
   currentThread = null;
+  currentBulletin = null;
   markActivePost(null);
+  markActiveBulletin(null);
   showReader(VIEW.EMPTY);
   syncUrl(null);
 }
 
 const POST_PATH_RE = /^\/p\/(\d{1,10})$/;
-function postIdFromPath() {
-  const m = POST_PATH_RE.exec(location.pathname);
-  return m ? parseInt(m[1], 10) : null;
+const BULLETIN_PATH_RE = /^\/b\/(\d{1,10})$/;
+function routeFromPath() {
+  const p = POST_PATH_RE.exec(location.pathname);
+  if (p) return { kind: 'post', id: parseInt(p[1], 10) };
+  const b = BULLETIN_PATH_RE.exec(location.pathname);
+  if (b) return { kind: 'bulletin', id: parseInt(b[1], 10) };
+  return null;
 }
-function syncUrl(id) {
-  const target = id == null ? '/' : `/p/${id}`;
+function syncUrl(route) {
+  const target = !route ? '/'
+    : route.kind === 'bulletin' ? `/b/${route.id}`
+    : `/p/${route.id}`;
   if (location.pathname === target) return;
   history.pushState(null, '', target);
 }
@@ -303,6 +313,7 @@ document.addEventListener('click', (e) => {
   else if (kind === 'mentions') closeMentionsDialog();
   else if (kind === 'confirm-rotate') closeConfirmRotate();
   else if (kind === 'channel') closeChannelDialog();
+  else if (kind === 'bulletin') closeBulletinDialog();
   else if (kind === 'reader') closeReader();
 });
 
@@ -355,12 +366,15 @@ async function refreshMe() {
       el('button', { textContent: '退出登录', onclick: logout }),
     );
     renderTokenChip();
+    $('#new-bulletin-btn').hidden = !isAdmin;
     await loadChannels();
+    await loadBulletins();
     await loadFeed();
     loadTags().catch(() => {});
     showReader(VIEW.EMPTY);
-    const initialId = postIdFromPath();
-    if (initialId != null) await openThread(initialId, { pushUrl: false });
+    const route = routeFromPath();
+    if (route && route.kind === 'post') await openThread(route.id, { pushUrl: false });
+    else if (route && route.kind === 'bulletin') await openBulletin(route.id, { pushUrl: false });
     schedulePollingMentions();
     refreshMentions({ silent: true }).catch(() => {});
     // Admins post under their username with no quota cost — auto-claim a
@@ -608,6 +622,131 @@ function renderComposeChannels() {
   if (prev && channels.some((c) => String(c.id) === prev)) sel.value = prev;
 }
 
+// --- Bulletins ---
+
+async function loadBulletins() {
+  try { bulletins = await api('GET', '/api/bulletins'); }
+  catch { bulletins = []; }
+  renderBulletinList();
+}
+
+function renderBulletinList() {
+  const box = $('#bulletin-list');
+  if (!box) return;
+  box.innerHTML = '';
+  if (!bulletins.length) {
+    box.appendChild(el('div', { className: 'muted bulletin-empty', textContent: '暂无公告' }));
+    return;
+  }
+  for (const b of bulletins) {
+    const btn = el('button', { type: 'button', className: 'bulletin-pill' });
+    btn.dataset.bulletinId = String(b.id);
+    btn.title = b.title;
+    btn.append(
+      el('span', { className: 'bulletin-title-text', textContent: b.title }),
+      el('span', { className: 'bulletin-author', textContent: `@${b.author_username}` }),
+    );
+    btn.addEventListener('click', () => openBulletin(b.id));
+    if (currentBulletin === b.id) btn.classList.add('is-active');
+    box.appendChild(btn);
+  }
+}
+
+function markActiveBulletin(id) {
+  const wanted = id == null ? null : String(id);
+  for (const n of $$('.bulletin-pill')) {
+    n.classList.toggle('is-active', n.dataset.bulletinId === wanted);
+  }
+}
+
+async function openBulletin(id, { pushUrl = true } = {}) {
+  currentBulletin = id;
+  currentThread = null;
+  markActivePost(null);
+  markActiveBulletin(id);
+  if (pushUrl) syncUrl({ kind: 'bulletin', id });
+  let row;
+  try {
+    row = await api('GET', `/api/bulletins/${id}`);
+  } catch (err) {
+    $('#bulletin-title').textContent = `公告 #${id}`;
+    $('#bulletin-meta').textContent = '';
+    $('#bulletin-body').innerHTML = '';
+    $('#bulletin-body').appendChild(el('p', { className: 'muted', textContent: err.message || '未找到' }));
+    $('#bulletin-actions').hidden = true;
+    showReader(VIEW.BULLETIN);
+    return;
+  }
+  $('#bulletin-title').textContent = row.title;
+  const meta = $('#bulletin-meta');
+  meta.textContent = `@${row.author_username} · ${fmtDate(row.created_at)}${row.updated_at ? ' · 已编辑' : ''}`;
+  applyIdHue(meta, row.author_username);
+  $('#bulletin-body').innerHTML = '';
+  $('#bulletin-body').appendChild(renderMarkdown(row.content));
+  renderBulletinActions(row);
+  showReader(VIEW.BULLETIN);
+  readerNode.scrollTo({ top: 0, behavior: 'instant' });
+}
+
+function renderBulletinActions(row) {
+  const box = $('#bulletin-actions');
+  box.innerHTML = '';
+  if (!isAdmin) { box.hidden = true; return; }
+  box.hidden = false;
+  const edit = el('button', { type: 'button', className: 'ghost small', textContent: '编辑' });
+  edit.addEventListener('click', () => openBulletinDialog(row));
+  const del = el('button', { type: 'button', className: 'ghost small danger', textContent: '删除' });
+  del.addEventListener('click', async () => {
+    if (!confirm(`删除公告「${row.title}」？`)) return;
+    try {
+      await api('DELETE', `/api/bulletins/${row.id}`);
+      bulletins = bulletins.filter((b) => b.id !== row.id);
+      renderBulletinList();
+      closeReader();
+    } catch (err) { alert(err.message); }
+  });
+  box.append(edit, del);
+}
+
+function openBulletinDialog(existing) {
+  const f = $('#bulletin-form');
+  f.reset();
+  $('#bulletin-err').textContent = '';
+  $('#bulletin-dialog-title').textContent = existing ? '编辑公告' : '新建公告';
+  $('#bulletin-submit').textContent = existing ? '保存' : '发布公告';
+  f.dataset.editingId = existing ? String(existing.id) : '';
+  if (existing) {
+    f.title.value = existing.title;
+    f.content.value = existing.content;
+  }
+  $('#bulletin-dialog').hidden = false;
+  f.title.focus();
+}
+function closeBulletinDialog() { $('#bulletin-dialog').hidden = true; }
+
+$('#new-bulletin-btn').addEventListener('click', () => openBulletinDialog(null));
+
+$('#bulletin-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const f = e.target;
+  $('#bulletin-err').textContent = '';
+  const editingId = f.dataset.editingId ? parseInt(f.dataset.editingId, 10) : null;
+  const body = { title: f.title.value, content: f.content.value };
+  try {
+    const row = editingId
+      ? await api('PUT', `/api/bulletins/${editingId}`, body)
+      : await api('POST', '/api/bulletins', body);
+    const existingIdx = bulletins.findIndex((b) => b.id === row.id);
+    if (existingIdx >= 0) bulletins[existingIdx] = row;
+    else bulletins.unshift(row);
+    renderBulletinList();
+    closeBulletinDialog();
+    await openBulletin(row.id, { pushUrl: true });
+  } catch (err) {
+    $('#bulletin-err').textContent = err.message;
+  }
+});
+
 function renderPostCard(p) {
   const titleRow = el('div', { className: 'post-title-row' }, [
     el('span', { className: 'id-badge', textContent: `#${p.id}` }),
@@ -817,8 +956,10 @@ async function deletePost() {
 
 async function openThread(id, { pushUrl = true } = {}) {
   currentThread = id;
+  currentBulletin = null;
+  markActiveBulletin(null);
   markActivePost(id);
-  if (pushUrl) syncUrl(id);
+  if (pushUrl) syncUrl({ kind: 'post', id });
   let data;
   try {
     data = await api('GET', `/api/posts/${id}`);
@@ -912,13 +1053,17 @@ function renderMissingThread(id, message) {
 
 window.addEventListener('popstate', () => {
   if ($('#forum-view').hidden) return;
-  const id = postIdFromPath();
-  if (id == null) {
+  const route = routeFromPath();
+  if (!route) {
     currentThread = null;
+    currentBulletin = null;
     markActivePost(null);
+    markActiveBulletin(null);
     showReader(VIEW.EMPTY);
-  } else if (id !== currentThread) {
-    openThread(id, { pushUrl: false }).catch(() => {});
+  } else if (route.kind === 'post' && route.id !== currentThread) {
+    openThread(route.id, { pushUrl: false }).catch(() => {});
+  } else if (route.kind === 'bulletin' && route.id !== currentBulletin) {
+    openBulletin(route.id, { pushUrl: false }).catch(() => {});
   }
 });
 
@@ -1504,6 +1649,7 @@ document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
   if (!$('#confirm-rotate-dialog').hidden) { closeConfirmRotate(); return; }
   if (!$('#channel-dialog').hidden) { closeChannelDialog(); return; }
+  if (!$('#bulletin-dialog').hidden) { closeBulletinDialog(); return; }
   if (!$('#token-dialog').hidden) { closeDialog(); return; }
   if (!$('#mentions-dialog').hidden) { closeMentionsDialog(); return; }
   if (currentView !== VIEW.EMPTY) closeReader();
