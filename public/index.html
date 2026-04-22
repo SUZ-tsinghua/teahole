@@ -15,6 +15,7 @@
     <span class="brand-sub">登录才能看见，默认发帖不留身份</span>
   </div>
   <div class="header-actions">
+    <button id="help-btn" class="icon-btn" type="button" aria-label="新手指引" title="新手指引">？</button>
     <button id="theme-toggle" class="icon-btn" type="button" aria-label="切换主题" title="切换亮/暗主题">
       <svg class="sun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <circle cx="12" cy="12" r="4"/>
@@ -215,6 +216,42 @@
         </div>
         <div class="err" id="bulletin-err"></div>
       </form>
+    </div>
+  </div>
+
+  <div id="help-dialog" class="dialog" hidden>
+    <div class="dialog-backdrop" data-close="help"></div>
+    <div class="dialog-card help-card">
+      <h2>新手指引</h2>
+      <p class="muted">论坛在默认匿名和登录可读之间做了取舍。以下是它的运转方式。</p>
+      <section class="help-section">
+        <h3>登录与身份</h3>
+        <p>注册或登录会得到一个长期会话 cookie，仅用来证明你是合法成员。阅读与发帖都需要登录，<strong>未登录无法看到任何内容</strong>。</p>
+      </section>
+      <section class="help-section">
+        <h3>发帖令牌 · 匿名身份</h3>
+        <p>普通成员发帖前要领一枚 24 小时的<strong>发帖令牌</strong>。服务器只保存令牌的哈希，不会把令牌与你的账号关联——这样数据库里找不到「某个用户写了哪条内容」的路径。</p>
+        <p>每条帖子显示的 <code>abcd1234</code> 就是令牌哈希前 8 位，构成你本次发言的匿名 ID。令牌过期或被轮换后，以前发的帖子便再也无法被编辑或删除——这正是默认状态。</p>
+      </section>
+      <section class="help-section">
+        <h3>管理员的可见性</h3>
+        <p>管理员发言会直接显示用户名（如 <code>@alice</code>），方便大家 @ 反馈。管理员可以删除违规内容，<strong>但无法把匿名发言还原到具体用户</strong>。</p>
+      </section>
+      <section class="help-section">
+        <h3>频道 · 标签 · 公告</h3>
+        <p>频道由管理员创建，按话题归档。你可以 📌 置顶常去的频道、🔔 静音不关心的频道。标签是发帖时的关键词。公告由管理员发布，固定在侧栏。</p>
+      </section>
+      <section class="help-section">
+        <h3>提醒 · 关注 · 收藏</h3>
+        <p><code>@8字符ID</code> 会提醒对方（通过侧边栏的「提醒」入口查看）；你也可以<strong>关注</strong>具体帖子，新评论会给出计数；<strong>收藏</strong>的帖子绑定在账号上，换令牌也不会丢。</p>
+      </section>
+      <section class="help-section">
+        <h3>键盘快捷键</h3>
+        <p><kbd>Esc</kbd> 关闭当前对话框 / 返回。编辑框里 <kbd>Enter</kbd> 或 <kbd>Tab</kbd> 可补全 @ 或 # 建议。</p>
+      </section>
+      <div class="row">
+        <button type="button" class="ghost" data-close="help">关闭</button>
+      </div>
     </div>
   </div>
 

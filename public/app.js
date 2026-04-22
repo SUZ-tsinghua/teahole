@@ -2,6 +2,7 @@ const TOKEN_STORE_KEY = 'anonforum.token';
 const THEME_STORE_KEY = 'anonforum.theme';
 const MY_REACTIONS_KEY = 'anonforum.myReactions';
 const MENTIONS_SEEN_KEY = 'anonforum.mentionsSeen';
+const HELP_SEEN_KEY = 'anonforum.helpSeen';
 // Authoritative list lives on the server (REACTION_KIND_SET in server.js).
 // Kept in sync manually — if you change one, change the other.
 const REACTION_KINDS = ['👍', '❤️', '😂', '😮', '😢', '🎉'];
@@ -323,8 +324,16 @@ document.addEventListener('click', (e) => {
   else if (kind === 'channel') closeChannelDialog();
   else if (kind === 'bulletin') closeBulletinDialog();
   else if (kind === 'followed') closeFollowedDialog();
+  else if (kind === 'help') closeHelpDialog();
   else if (kind === 'reader') closeReader();
 });
+
+function openHelpDialog() {
+  $('#help-dialog').hidden = false;
+  try { localStorage.setItem(HELP_SEEN_KEY, '1'); } catch {}
+}
+function closeHelpDialog() { $('#help-dialog').hidden = true; }
+$('#help-btn').addEventListener('click', openHelpDialog);
 
 function openChannelDialog() {
   $('#channel-form').reset();
@@ -393,6 +402,10 @@ async function refreshMe() {
     // Admins post under their username with no quota cost — auto-claim a
     // token on arrival so posting/reacting works without the dialog.
     if (isAdmin && !getToken()) issueNewToken($('#token-err')).catch(() => {});
+    // First-time users see the onboarding dialog automatically.
+    try {
+      if (!localStorage.getItem(HELP_SEEN_KEY)) openHelpDialog();
+    } catch {}
   } catch {
     currentUsername = null;
     isAdmin = false;
@@ -1912,6 +1925,7 @@ document.addEventListener('keydown', (e) => {
   if (!$('#channel-dialog').hidden) { closeChannelDialog(); return; }
   if (!$('#bulletin-dialog').hidden) { closeBulletinDialog(); return; }
   if (!$('#followed-dialog').hidden) { closeFollowedDialog(); return; }
+  if (!$('#help-dialog').hidden) { closeHelpDialog(); return; }
   if (!$('#token-dialog').hidden) { closeDialog(); return; }
   if (!$('#mentions-dialog').hidden) { closeMentionsDialog(); return; }
   if (currentView !== VIEW.EMPTY) closeReader();
