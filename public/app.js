@@ -234,11 +234,20 @@ function renderTokenBox() {
   }));
 }
 
-let tokenQuota = { remaining: null, max: null };
+let tokenQuota = { remaining: null, max: null, unlimited: false };
 
 function renderTokenQuota() {
   const box = $('#token-quota');
   box.innerHTML = '';
+  if (tokenQuota.unlimited) {
+    box.append(
+      el('span', { className: 'token-quota-label', textContent: '管理员身份：' }),
+      el('strong', { className: 'token-quota-count', textContent: '无限轮换' }),
+    );
+    $('#new-token').disabled = false;
+    $('#new-token').title = '';
+    return;
+  }
   if (tokenQuota.remaining == null) return;
   const exhausted = tokenQuota.remaining === 0;
   box.append(
@@ -256,7 +265,11 @@ function renderTokenQuota() {
 async function refreshQuota() {
   try {
     const me = await api('GET', '/api/me');
-    tokenQuota = { remaining: me.tokens_remaining, max: me.max_tokens_per_day };
+    tokenQuota = {
+      remaining: me.tokens_remaining,
+      max: me.max_tokens_per_day,
+      unlimited: !!me.unlimited_tokens,
+    };
   } catch {}
   renderTokenQuota();
 }
@@ -321,7 +334,11 @@ $('#channel-form').addEventListener('submit', async (e) => {
 async function refreshMe() {
   try {
     const me = await api('GET', '/api/me');
-    tokenQuota = { remaining: me.tokens_remaining, max: me.max_tokens_per_day };
+    tokenQuota = {
+      remaining: me.tokens_remaining,
+      max: me.max_tokens_per_day,
+      unlimited: !!me.unlimited_tokens,
+    };
     currentUsername = me.username;
     isAdmin = !!me.admin;
     adminHandles = Array.isArray(me.admin_handles) ? me.admin_handles : [];
@@ -346,6 +363,9 @@ async function refreshMe() {
     if (initialId != null) await openThread(initialId, { pushUrl: false });
     schedulePollingMentions();
     refreshMentions({ silent: true }).catch(() => {});
+    // Admins post under their username with no quota cost — auto-claim a
+    // token on arrival so posting/reacting works without the dialog.
+    if (isAdmin && !getToken()) issueNewToken($('#token-err')).catch(() => {});
   } catch {
     currentUsername = null;
     isAdmin = false;
@@ -409,8 +429,9 @@ async function issueNewToken(errNode) {
 }
 
 $('#new-token').addEventListener('click', () => {
-  // First-time issuance has nothing to lose — skip the confirm.
-  if (!getToken()) { issueNewToken($('#token-err')); return; }
+  // First-time issuance, or admins whose identity stays @username, have
+  // nothing to lose on rotation — skip the confirm dialog.
+  if (!getToken() || isAdmin) { issueNewToken($('#token-err')); return; }
   openConfirmRotate();
 });
 

@@ -303,9 +303,12 @@ const toggleReactionTx = db.transaction((postId, tokenHash, kind) => {
   }
 });
 
+// Admins post non-anonymously under their username, so their rotations
+// carry no "lose the old pseudonym" cost — they get unlimited free claims.
 const claimTokenSlotTx = db.transaction((userId, today) => {
   const row = Q.findUserQuota.get(userId);
   if (!row) return { ok: false, reason: '用户不存在' };
+  if (isLiveAdmin(userId)) return { ok: true, unlimited: true };
   const count = row.tokens_issued_date === today ? row.tokens_issued_count : 0;
   if (count >= MAX_TOKENS_PER_DAY) return { ok: false, reason: '已达到今日令牌上限' };
   Q.bumpTokenCount.run(today, count + 1, userId);
@@ -313,12 +316,14 @@ const claimTokenSlotTx = db.transaction((userId, today) => {
 });
 
 function quotaFor(userId) {
+  if (isLiveAdmin(userId)) return { remaining: null, max: null, unlimited: true };
   const row = Q.findUserQuota.get(userId);
   const today = todayUTC();
   const used = row && row.tokens_issued_date === today ? row.tokens_issued_count : 0;
   return {
     remaining: Math.max(0, MAX_TOKENS_PER_DAY - used),
     max: MAX_TOKENS_PER_DAY,
+    unlimited: false,
   };
 }
 
@@ -568,6 +573,7 @@ app.get('/api/me', requireSession, (req, res) => {
     admin_handles: Q.listAdminHandles.all().map((row) => row.username),
     tokens_remaining: q.remaining,
     max_tokens_per_day: q.max,
+    unlimited_tokens: !!q.unlimited,
   });
 });
 
@@ -592,6 +598,7 @@ app.post('/api/token', requireSession, (req, res) => {
     expires_at: expiresAt,
     tokens_remaining: q.remaining,
     max_tokens_per_day: q.max,
+    unlimited_tokens: !!q.unlimited,
   });
 });
 
