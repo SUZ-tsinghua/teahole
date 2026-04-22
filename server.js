@@ -1149,14 +1149,14 @@ app.get('/api/feed.xml', requireSession, (req, res) => {
       <link>${esc(link)}</link>
       <guid isPermaLink="true">${esc(link)}</guid>
       <pubDate>${new Date(r.created_at).toUTCString()}</pubDate>
-      <author>${esc(r.pseudonym)}@anonforum</author>
+      <author>${esc(r.pseudonym)}@teahole</author>
       <description>${esc(snippet)}</description>
     </item>`;
   }).join('');
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0">
   <channel>
-    <title>匿名论坛</title>
+    <title>茶园树洞</title>
     <link>${esc(base)}/</link>
     <description>Login-gated but unlinkable discussion platform</description>
     <language>zh-CN</language>
@@ -1204,5 +1204,5 @@ setInterval(rotate, ROTATE_INTERVAL_MS).unref();
 rotate();
 
 app.listen(PORT, () => {
-  console.log(`anonforum listening on http://localhost:${PORT}`);
+  console.log(`teahole listening on http://localhost:${PORT}`);
 });

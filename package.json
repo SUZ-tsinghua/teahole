@@ -1,7 +1,7 @@
 {
-  "name": "anonforum",
+  "name": "teahole",
   "version": "0.1.0",
-  "description": "Login-gated but unlinkable discussion platform with rotating posting tokens",
+  "description": "茶园树洞 — login-gated but unlinkable discussion platform with rotating posting tokens",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
