@@ -651,10 +651,23 @@ function markActivePost(id) {
 
 // --- Search ---
 
+// `#<id>` or a bare positive integer is treated as a direct post lookup
+// rather than an FTS query — the search input doubles as a jump-to-post box.
+const POST_ID_SEARCH_RE = /^#?(\d{1,10})$/;
+
 $('#search-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const q = $('#search-input').value.trim();
   if (!q) { clearFilter(); return; }
+  const idMatch = POST_ID_SEARCH_RE.exec(q);
+  if (idMatch) {
+    const id = parseInt(idMatch[1], 10);
+    if (id > 0) {
+      $('#search-clear').hidden = false;
+      await openThread(id);
+      return;
+    }
+  }
   filterState = { kind: 'search', value: q };
   $('#search-clear').hidden = false;
   await loadFeed();
