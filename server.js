@@ -20,6 +20,9 @@ const MENTIONS_LIMIT = 50;
 const RSS_LIMIT = 50;
 const MAX_TAGS_PER_POST = 5;
 const TAG_RE = /^[a-z0-9_-]{1,24}$/;
+const CHANNEL_SLUG_RE = /^[a-z0-9_-]{1,32}$/;
+const CHANNEL_NAME_MAX = 60;
+const CHANNEL_DESC_MAX = 200;
 
 const SESSION_COOKIE_OPTS = {
   httpOnly: true,
@@ -101,7 +104,7 @@ const Q = {
     `SELECT id, pseudonym, title,
             substr(content, 1, ${PREVIEW_BYTES}) AS content,
             length(content) > ${PREVIEW_BYTES} AS truncated,
-            created_at, edited_at
+            created_at, edited_at, channel_id
      FROM posts WHERE deleted_at IS NULL
      ORDER BY created_at DESC LIMIT ${FEED_LIMIT}`
   ),
@@ -109,21 +112,29 @@ const Q = {
     `SELECT p.id, p.pseudonym, p.title,
             substr(p.content, 1, ${PREVIEW_BYTES}) AS content,
             length(p.content) > ${PREVIEW_BYTES} AS truncated,
-            p.created_at, p.edited_at
+            p.created_at, p.edited_at, p.channel_id
      FROM posts p JOIN post_tags pt ON pt.post_id = p.id
      WHERE pt.tag = ? AND p.deleted_at IS NULL
      ORDER BY p.created_at DESC LIMIT ${FEED_LIMIT}`
+  ),
+  listPostsByChannel: db.prepare(
+    `SELECT id, pseudonym, title,
+            substr(content, 1, ${PREVIEW_BYTES}) AS content,
+            length(content) > ${PREVIEW_BYTES} AS truncated,
+            created_at, edited_at, channel_id
+     FROM posts WHERE channel_id = ? AND deleted_at IS NULL
+     ORDER BY created_at DESC LIMIT ${FEED_LIMIT}`
   ),
   listPostsForRss: db.prepare(
     `SELECT id, pseudonym, title, content, created_at FROM posts
      WHERE deleted_at IS NULL
      ORDER BY created_at DESC LIMIT ${RSS_LIMIT}`
   ),
-  getPost:         db.prepare('SELECT id, pseudonym, title, content, created_at, edited_at, deleted_at, token_hash FROM posts WHERE id = ?'),
+  getPost:         db.prepare('SELECT id, pseudonym, title, content, created_at, edited_at, deleted_at, token_hash, channel_id FROM posts WHERE id = ?'),
   listComments:    db.prepare('SELECT id, parent_id, pseudonym, content, created_at, edited_at FROM comments WHERE post_id = ? ORDER BY created_at ASC'),
   getComment:      db.prepare('SELECT id, post_id, pseudonym, content, token_hash FROM comments WHERE id = ?'),
   getCommentPost:  db.prepare('SELECT post_id FROM comments WHERE id = ?'),
-  insertPost:      db.prepare('INSERT INTO posts (pseudonym, title, content, created_at, token_hash) VALUES (?, ?, ?, ?, ?)'),
+  insertPost:      db.prepare('INSERT INTO posts (pseudonym, title, content, created_at, token_hash, channel_id) VALUES (?, ?, ?, ?, ?, ?)'),
   insertComment:   db.prepare('INSERT INTO comments (post_id, parent_id, pseudonym, content, created_at, token_hash) VALUES (?, ?, ?, ?, ?, ?)'),
   updateComment:   db.prepare('UPDATE comments SET content = ?, edited_at = ? WHERE id = ? AND token_hash IS NOT NULL AND token_hash = ?'),
   // Post-delete is a tombstone: blank the visible content and set
@@ -168,12 +179,21 @@ const Q = {
     `SELECT p.id, p.pseudonym, p.title,
             substr(p.content, 1, ${PREVIEW_BYTES}) AS content,
             length(p.content) > ${PREVIEW_BYTES} AS truncated,
-            p.created_at, p.edited_at,
+            p.created_at, p.edited_at, p.channel_id,
             bm25(posts_fts) AS rank
      FROM posts_fts JOIN posts p ON p.id = posts_fts.rowid
      WHERE posts_fts MATCH ? AND p.deleted_at IS NULL
      ORDER BY rank LIMIT ${SEARCH_LIMIT}`
   ),
+  listChannels:    db.prepare(
+    `SELECT c.id, c.slug, c.name, c.description, c.created_at,
+            (SELECT COUNT(*) FROM posts p WHERE p.channel_id = c.id AND p.deleted_at IS NULL) AS post_count
+     FROM channels c ORDER BY c.created_at ASC`
+  ),
+  getChannelBySlug: db.prepare('SELECT id, slug, name, description FROM channels WHERE slug = ?'),
+  getChannelById:   db.prepare('SELECT id, slug, name, description FROM channels WHERE id = ?'),
+  insertChannel:    db.prepare('INSERT INTO channels (slug, name, description, created_at) VALUES (?, ?, ?, ?)'),
+  deleteChannel:    db.prepare('DELETE FROM channels WHERE id = ?'),
 };
 
 const REACTION_KINDS = ['👍', '❤️', '😂', '😮', '😢', '🎉'];
@@ -199,6 +219,19 @@ function reactionCountsFor(postId) {
 
 function tagsFor(postId) {
   return Q.listPostTags.all(postId).map((r) => r.tag);
+}
+
+function mapPostPreview(r) {
+  return {
+    id: r.id,
+    pseudonym: r.pseudonym,
+    title: r.title,
+    content: r.content,
+    truncated: !!r.truncated,
+    created_at: r.created_at,
+    edited_at: r.edited_at,
+    channel_id: r.channel_id,
+  };
 }
 
 // Attach tags to a batch of post rows without N+1. Builds one query per
@@ -314,6 +347,13 @@ function isLiveAdmin(uid) {
   return !!(row && row.is_admin);
 }
 
+function requireAdmin(req, res, next) {
+  if (!req.user || !req.user.a || !isLiveAdmin(req.user.uid)) {
+    return res.status(403).json({ error: '需要管理员权限' });
+  }
+  next();
+}
+
 function parseId(req, res, key = 'id') {
   const id = parseInt(req.params[key], 10);
   if (!Number.isFinite(id)) { res.status(400).json({ error: '无效 ID' }); return null; }
@@ -354,6 +394,21 @@ function sanitizeTagParam(raw) {
   if (typeof raw !== 'string') return null;
   const t = raw.trim().toLowerCase();
   return TAG_RE.test(t) ? t : null;
+}
+
+function sanitizeChannelSlug(raw) {
+  if (typeof raw !== 'string') return null;
+  const s = raw.trim().toLowerCase();
+  return CHANNEL_SLUG_RE.test(s) ? s : null;
+}
+
+// null means unclassified (rendered as the default channel client-side).
+function resolveChannelInput(raw) {
+  if (raw == null) return { ok: true, channelId: null };
+  if (!Number.isInteger(raw) || raw <= 0) return { ok: false, error: '无效的频道' };
+  const row = Q.getChannelById.get(raw);
+  if (!row) return { ok: false, error: '频道不存在' };
+  return { ok: true, channelId: row.id };
 }
 
 // Strip FTS5 operator syntax so user input is treated as literal tokens.
@@ -485,32 +540,32 @@ app.post('/api/token', requireSession, (req, res) => {
   });
 });
 
-// Feed. Supports optional ?tag=xyz filter. Tags are attached in batch.
+// Feed. Supports optional ?tag=xyz or ?channel=<slug> filter (mutually
+// exclusive — the client only sets one at a time). Tags are attached in batch.
 app.get('/api/posts', requireSession, (req, res) => {
   let rows;
   const tagParam = req.query.tag;
+  const chParam = req.query.channel;
   if (tagParam != null) {
     const tag = sanitizeTagParam(tagParam);
     if (!tag) return res.status(400).json({ error: '无效的标签' });
     rows = Q.listPostsByTag.all(tag);
+  } else if (chParam != null) {
+    const slug = sanitizeChannelSlug(chParam);
+    if (!slug) return res.status(400).json({ error: '无效的频道' });
+    const ch = Q.getChannelBySlug.get(slug);
+    if (!ch) return res.status(404).json({ error: '频道不存在' });
+    rows = Q.listPostsByChannel.all(ch.id);
   } else {
     rows = Q.listPosts.all();
   }
-  rows = rows.map((r) => ({
-    id: r.id,
-    pseudonym: r.pseudonym,
-    title: r.title,
-    content: r.content,
-    truncated: !!r.truncated,
-    created_at: r.created_at,
-    edited_at: r.edited_at,
-  }));
+  rows = rows.map(mapPostPreview);
   attachTags(rows);
   res.json(rows);
 });
 
 app.post('/api/posts', requireSession, (req, res) => {
-  const { token, title, content, tags } = req.body || {};
+  const { token, title, content, tags, channel_id } = req.body || {};
   const resolved = resolveToken(token);
   if (!resolved) return res.status(401).json({ error: '发帖令牌无效或已过期' });
   const t = sanitizeText(title, 200);
@@ -518,9 +573,11 @@ app.post('/api/posts', requireSession, (req, res) => {
   if (!t || !c) return res.status(400).json({ error: '标题和内容不能为空' });
   const cleanTags = sanitizeTags(tags);
   if (cleanTags === null) return res.status(400).json({ error: '标签格式错误（最多 5 个，每个 1–24 位 a-z / 0-9 / - / _）' });
+  const ch = resolveChannelInput(channel_id);
+  if (!ch.ok) return res.status(400).json({ error: ch.error });
 
   const createdAt = Date.now();
-  const info = Q.insertPost.run(resolved.pseudonym, t, c, createdAt, resolved.tokenHash);
+  const info = Q.insertPost.run(resolved.pseudonym, t, c, createdAt, resolved.tokenHash, ch.channelId);
   if (cleanTags.length) setPostTagsTx(info.lastInsertRowid, cleanTags);
   recordMentionsForPost(info.lastInsertRowid, c, createdAt);
 
@@ -533,6 +590,7 @@ app.post('/api/posts', requireSession, (req, res) => {
     created_at: createdAt,
     edited_at: null,
     tags: cleanTags,
+    channel_id: ch.channelId,
   });
 });
 
@@ -680,6 +738,48 @@ app.get('/api/tags', requireSession, (req, res) => {
   res.json(Q.listAllTags.all());
 });
 
+// Channels list with live post counts. Any logged-in user can read.
+app.get('/api/channels', requireSession, (req, res) => {
+  res.json(Q.listChannels.all());
+});
+
+// Channel creation carries no user_id, so this endpoint is privacy-neutral
+// with respect to posts — the admin gate is just curation, not deanonymization.
+app.post('/api/channels', requireSession, requireAdmin, (req, res) => {
+  const { slug, name, description } = req.body || {};
+  const cleanSlug = sanitizeChannelSlug(slug);
+  if (!cleanSlug) return res.status(400).json({ error: 'slug 格式错误（1–32 位 a-z / 0-9 / - / _）' });
+  const cleanName = sanitizeText(name, CHANNEL_NAME_MAX);
+  if (!cleanName) return res.status(400).json({ error: '频道名称不能为空' });
+  let cleanDesc = null;
+  if (description != null && description !== '') {
+    cleanDesc = sanitizeText(description, CHANNEL_DESC_MAX);
+    if (!cleanDesc) return res.status(400).json({ error: `频道描述过长（上限 ${CHANNEL_DESC_MAX}）` });
+  }
+  try {
+    const info = Q.insertChannel.run(cleanSlug, cleanName, cleanDesc, Date.now());
+    res.json({
+      id: info.lastInsertRowid,
+      slug: cleanSlug,
+      name: cleanName,
+      description: cleanDesc,
+      post_count: 0,
+    });
+  } catch (e) {
+    if (e.code === 'SQLITE_CONSTRAINT_UNIQUE') {
+      return res.status(409).json({ error: 'slug 已被占用' });
+    }
+    throw e;
+  }
+});
+
+app.delete('/api/channels/:id', requireSession, requireAdmin, (req, res) => {
+  const id = parseId(req, res); if (id == null) return;
+  const info = Q.deleteChannel.run(id);
+  if (info.changes === 0) return res.status(404).json({ error: '频道不存在' });
+  res.json({ ok: true });
+});
+
 // FTS5 search over post title+content. Trigram tokenizer = minimum 3 chars.
 app.get('/api/search', requireSession, (req, res) => {
   const q = sanitizeFtsQuery(req.query.q);
@@ -688,15 +788,7 @@ app.get('/api/search', requireSession, (req, res) => {
       error: `搜索词需为 ${SEARCH_MIN_CHARS} 位及以上`,
     });
   }
-  const rows = Q.searchPosts.all(q).map((r) => ({
-    id: r.id,
-    pseudonym: r.pseudonym,
-    title: r.title,
-    content: r.content,
-    truncated: !!r.truncated,
-    created_at: r.created_at,
-    edited_at: r.edited_at,
-  }));
+  const rows = Q.searchPosts.all(q).map(mapPostPreview);
   attachTags(rows);
   res.json(rows);
 });

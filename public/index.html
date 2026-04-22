@@ -57,6 +57,12 @@
         </form>
       </div>
       <div id="filter-bar" class="filter-bar" hidden></div>
+      <div class="sidebar-section-head">
+        <div class="sidebar-section-label">频道</div>
+        <button id="new-channel-btn" type="button" class="icon-btn subtle" hidden aria-label="新建频道" title="新建频道">＋</button>
+      </div>
+      <div id="channel-list" class="channel-list"></div>
+      <div class="sidebar-section-label">标签</div>
       <div id="tag-cloud" class="tag-cloud"></div>
       <div class="sidebar-section-label" id="feed-label">动态</div>
       <div id="feed" class="feed"></div>
@@ -86,6 +92,7 @@
         <button class="back" data-close="reader">← 返回</button>
         <h2 id="thread-title"></h2>
         <div id="thread-meta" class="meta"></div>
+        <div id="thread-channel" class="thread-channel" hidden></div>
         <div id="thread-tags" class="thread-tags"></div>
         <div id="thread-body" class="prose"></div>
         <div id="thread-actions" class="thread-actions" hidden></div>
@@ -107,6 +114,10 @@
         <p class="muted compose-hint">服务器只记录令牌的哈希，无法把帖子和你连起来。</p>
         <form id="post-form" class="inline-form">
           <input name="title" placeholder="标题" required maxlength="200">
+          <label class="field-row">
+            <span class="field-label">频道</span>
+            <select name="channel_id" id="compose-channel"></select>
+          </label>
           <textarea name="content" placeholder="分享点什么..." required maxlength="10000"></textarea>
           <input name="tags" placeholder="标签（空格分隔，最多 5 个，如 feedback bug-report）" maxlength="200">
           <div class="form-actions">
@@ -148,6 +159,24 @@
         <button type="button" class="ghost" data-close="confirm-rotate">取消</button>
       </div>
       <div class="err" id="confirm-rotate-err"></div>
+    </div>
+  </div>
+
+  <div id="channel-dialog" class="dialog" hidden>
+    <div class="dialog-backdrop" data-close="channel"></div>
+    <div class="dialog-card">
+      <h2>新建频道</h2>
+      <p class="muted">频道是公开的话题分区，任何登录用户都可以往里发帖。</p>
+      <form id="channel-form" class="inline-form">
+        <input name="slug" placeholder="slug（小写英文、数字、- 或 _）" required maxlength="32" autocomplete="off">
+        <input name="name" placeholder="名称" required maxlength="60">
+        <input name="description" placeholder="简介（可选）" maxlength="200">
+        <div class="row">
+          <button type="submit">创建</button>
+          <button type="button" class="ghost" data-close="channel">取消</button>
+        </div>
+        <div class="err" id="channel-err"></div>
+      </form>
     </div>
   </div>
 

@@ -66,6 +66,17 @@ CREATE TABLE IF NOT EXISTS reactions (
 );
 CREATE INDEX IF NOT EXISTS idx_reactions_post ON reactions(post_id);
 
+-- Same privacy shape as tags: attached to the post, not the author.
+-- ON DELETE SET NULL on posts.channel_id (in the ALTER below) keeps
+-- posts alive when a channel is removed — content is not admin-churnable.
+CREATE TABLE IF NOT EXISTS channels (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  slug TEXT UNIQUE NOT NULL,
+  name TEXT NOT NULL,
+  description TEXT,
+  created_at INTEGER NOT NULL
+);
+
 -- Tags: normalized lowercase, attached to a post. Stored per-post (not
 -- per-user), so tagging leaks no "who tags what" info.
 CREATE TABLE IF NOT EXISTS post_tags (
@@ -148,7 +159,20 @@ if (!postCols.includes('token_hash')) {
 if (!postCols.includes('deleted_at')) {
   db.exec('ALTER TABLE posts ADD COLUMN deleted_at INTEGER');
 }
+if (!postCols.includes('channel_id')) {
+  db.exec(
+    'ALTER TABLE posts ADD COLUMN channel_id INTEGER REFERENCES channels(id) ON DELETE SET NULL'
+  );
+}
 db.exec('CREATE INDEX IF NOT EXISTS idx_posts_deleted ON posts(deleted_at)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_posts_channel ON posts(channel_id)');
+
+const channelCount = db.prepare('SELECT count(*) AS n FROM channels').get().n;
+if (channelCount === 0) {
+  db.prepare(
+    'INSERT INTO channels (slug, name, description, created_at) VALUES (?, ?, ?, ?)'
+  ).run('general', '一般讨论', '默认频道', Date.now());
+}
 
 // Backfill FTS for pre-existing posts (fresh DB has nothing to do).
 const ftsCount = db.prepare('SELECT count(*) AS n FROM posts_fts').get().n;

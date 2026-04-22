@@ -132,6 +132,13 @@ let feedPosts = [];
 let filterState = { kind: null, value: null };
 let mentionPollTimer = null;
 let lastMentions = [];
+let channels = [];
+let isAdmin = false;
+
+function channelById(id) {
+  if (id == null) return null;
+  return channels.find((c) => c.id === id) || null;
+}
 
 function showReader(which) {
   if (currentView === which) return;
@@ -234,13 +241,41 @@ document.addEventListener('click', (e) => {
   if (kind === 'dialog') closeDialog();
   else if (kind === 'mentions') closeMentionsDialog();
   else if (kind === 'confirm-rotate') closeConfirmRotate();
+  else if (kind === 'channel') closeChannelDialog();
   else if (kind === 'reader') closeReader();
+});
+
+function openChannelDialog() {
+  $('#channel-form').reset();
+  $('#channel-err').textContent = '';
+  $('#channel-dialog').hidden = false;
+  $('#channel-form').slug.focus();
+}
+function closeChannelDialog() { $('#channel-dialog').hidden = true; }
+$('#new-channel-btn').addEventListener('click', openChannelDialog);
+$('#channel-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const f = e.target;
+  $('#channel-err').textContent = '';
+  try {
+    await api('POST', '/api/channels', {
+      slug: f.slug.value,
+      name: f.name.value,
+      description: f.description.value || null,
+    });
+    closeChannelDialog();
+    await loadChannels();
+  } catch (err) {
+    $('#channel-err').textContent = err.message;
+  }
 });
 
 async function refreshMe() {
   try {
     const me = await api('GET', '/api/me');
     tokenQuota = { remaining: me.tokens_remaining, max: me.max_tokens_per_day };
+    isAdmin = !!me.admin;
+    $('#new-channel-btn').hidden = !isAdmin;
     $('#auth-view').hidden = true;
     $('#forum-view').hidden = false;
     $('#userbar').innerHTML = '';
@@ -252,6 +287,7 @@ async function refreshMe() {
       el('button', { textContent: '退出登录', onclick: logout }),
     );
     renderTokenChip();
+    await loadChannels();
     await loadFeed();
     loadTags().catch(() => {});
     showReader(VIEW.EMPTY);
@@ -330,17 +366,27 @@ function renderFilterBar() {
   if (!filterState.kind) {
     bar.hidden = true;
     label.textContent = '动态';
-    return;
+  } else {
+    bar.hidden = false;
+    let text, sub;
+    if (filterState.kind === 'tag') {
+      text = `筛选标签：#${filterState.value}`;
+      sub = '动态 · 标签';
+    } else if (filterState.kind === 'channel') {
+      const ch = channelById(filterState.value);
+      text = `频道：${ch ? ch.name : '—'}`;
+      sub = '动态 · 频道';
+    } else {
+      text = `搜索：${filterState.value}`;
+      sub = '动态 · 搜索';
+    }
+    label.textContent = sub;
+    bar.append(
+      el('span', { className: 'filter-text', textContent: text }),
+      el('button', { className: 'link-btn', type: 'button', textContent: '清除', onclick: clearFilter }),
+    );
   }
-  bar.hidden = false;
-  const text = filterState.kind === 'tag'
-    ? `筛选标签：#${filterState.value}`
-    : `搜索：${filterState.value}`;
-  label.textContent = filterState.kind === 'tag' ? '动态 · 标签' : '动态 · 搜索';
-  bar.append(
-    el('span', { className: 'filter-text', textContent: text }),
-    el('button', { className: 'link-btn', type: 'button', textContent: '清除', onclick: clearFilter }),
-  );
+  renderChannelList();
 }
 
 async function clearFilter() {
@@ -360,6 +406,10 @@ async function loadFeed() {
       rows = await api('GET', `/api/posts?tag=${encodeURIComponent(filterState.value)}`);
     } else if (filterState.kind === 'search') {
       rows = await api('GET', `/api/search?q=${encodeURIComponent(filterState.value)}`);
+    } else if (filterState.kind === 'channel') {
+      const ch = channelById(filterState.value);
+      if (!ch) { clearFilter(); return; }
+      rows = await api('GET', `/api/posts?channel=${encodeURIComponent(ch.slug)}`);
     } else {
       rows = await api('GET', '/api/posts');
     }
@@ -407,17 +457,93 @@ async function filterByTag(tag) {
   await loadFeed();
 }
 
+async function filterByChannel(channelId) {
+  filterState = { kind: 'channel', value: channelId };
+  $('#search-input').value = '';
+  $('#search-clear').hidden = true;
+  await loadFeed();
+}
+
+async function loadChannels() {
+  try { channels = await api('GET', '/api/channels'); }
+  catch { channels = []; }
+  renderChannelList();
+  renderComposeChannels();
+}
+
+function renderChannelList() {
+  const box = $('#channel-list');
+  if (!box) return;
+  box.innerHTML = '';
+  if (!channels.length) {
+    box.appendChild(el('div', { className: 'muted channel-empty', textContent: '暂无频道' }));
+    return;
+  }
+  const activeId = filterState.kind === 'channel' ? filterState.value : null;
+  for (const ch of channels) {
+    const btn = el('button', { type: 'button', className: 'channel-pill' });
+    if (activeId === ch.id) btn.classList.add('is-active');
+    btn.title = ch.description || ch.name;
+    btn.append(
+      el('span', { className: 'channel-hash', textContent: '#' }),
+      el('span', { className: 'channel-name', textContent: ch.name }),
+      el('span', { className: 'channel-count', textContent: String(ch.post_count || 0) }),
+    );
+    btn.addEventListener('click', () => filterByChannel(ch.id));
+    if (isAdmin && ch.slug !== 'general') {
+      const del = el('span', { className: 'channel-del', title: '删除频道', textContent: '×' });
+      del.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        if (!confirm(`删除频道「${ch.name}」？该频道下的帖子会回到默认分区，不会被删除。`)) return;
+        try {
+          await api('DELETE', `/api/channels/${ch.id}`);
+          if (filterState.kind === 'channel' && filterState.value === ch.id) {
+            filterState = { kind: null, value: null };
+          }
+          await loadChannels();
+          await loadFeed();
+        } catch (err) { alert(err.message); }
+      });
+      btn.appendChild(del);
+    }
+    box.appendChild(btn);
+  }
+}
+
+function renderComposeChannels() {
+  const sel = $('#compose-channel');
+  if (!sel) return;
+  const prev = sel.value;
+  sel.innerHTML = '';
+  if (!channels.length) {
+    sel.appendChild(el('option', { value: '', textContent: '（无可用频道）' }));
+    return;
+  }
+  for (const ch of channels) {
+    sel.appendChild(el('option', { value: String(ch.id), textContent: ch.name }));
+  }
+  if (prev && channels.some((c) => String(c.id) === prev)) sel.value = prev;
+}
+
 function renderPostCard(p) {
   const titleRow = el('div', { className: 'post-title-row' }, [
     el('span', { className: 'id-badge', textContent: `#${p.id}` }),
     el('span', { className: 'post-title', textContent: p.title }),
   ]);
   const preview = p.truncated ? p.content + '…' : p.content;
-  const children = [
-    titleRow,
+  const children = [titleRow];
+  const ch = channelById(p.channel_id);
+  if (ch) {
+    const badge = el('button', {
+      type: 'button', className: 'channel-badge small', textContent: ch.name, title: ch.description || ch.name,
+    });
+    badge.addEventListener('click', (e) => { e.stopPropagation(); filterByChannel(ch.id); });
+    children.push(badge);
+  }
+  children.push(
     el('div', { className: 'post-preview', textContent: preview }),
     metaLine(p.pseudonym, p.created_at, p.edited_at),
-  ];
+  );
   if (p.tags && p.tags.length) {
     const tagRow = el('div', { className: 'card-tags' });
     for (const tag of p.tags) {
@@ -462,6 +588,11 @@ $('#compose-btn').addEventListener('click', openCompose);
 function openCompose() {
   const f = $('#post-form');
   f.reset();
+  renderComposeChannels();
+  // Preselect the channel we're filtering on, so the new post lands there.
+  if (filterState.kind === 'channel' && channelById(filterState.value)) {
+    f.channel_id.value = String(filterState.value);
+  }
   $('#post-err').textContent = '';
   currentThread = null;
   markActivePost(null);
@@ -481,9 +612,11 @@ $('#post-form').addEventListener('submit', async (e) => {
   if (!t) { $('#post-err').textContent = '请先获取发帖令牌。'; openDialog(); return; }
   const f = e.target;
   const tags = parseTagsInput(f.tags.value);
+  const rawCh = f.channel_id && f.channel_id.value;
+  const channel_id = rawCh ? parseInt(rawCh, 10) : null;
   try {
     const created = await api('POST', '/api/posts', {
-      token: t.token, title: f.title.value, content: f.content.value, tags,
+      token: t.token, title: f.title.value, content: f.content.value, tags, channel_id,
     });
     f.reset();
     const feed = $('#feed');
@@ -492,6 +625,8 @@ $('#post-form').addEventListener('submit', async (e) => {
     feedPosts.unshift(created);
     feed.prepend(renderPostCard(created));
     loadTags().catch(() => {});
+    const ch = channelById(created.channel_id);
+    if (ch) { ch.post_count = (ch.post_count || 0) + 1; renderChannelList(); }
     await openThread(created.id);
   } catch (err) {
     $('#post-err').textContent = err.message;
@@ -532,6 +667,21 @@ function renderThreadTags() {
     chip.addEventListener('click', () => filterByTag(tag));
     box.appendChild(chip);
   }
+}
+
+function renderThreadChannel(channelId) {
+  const box = $('#thread-channel');
+  if (!box) return;
+  box.innerHTML = '';
+  const ch = channelById(channelId);
+  if (!ch) { box.hidden = true; return; }
+  box.hidden = false;
+  const chip = el('button', {
+    type: 'button', className: 'channel-badge', textContent: ch.name,
+    title: ch.description || ch.name,
+  });
+  chip.addEventListener('click', () => filterByChannel(ch.id));
+  box.appendChild(chip);
 }
 
 function renderThreadActions() {
@@ -607,6 +757,7 @@ async function openThread(id, { pushUrl = true } = {}) {
   } else {
     $('#thread-body').appendChild(renderMarkdown(post.content));
   }
+  renderThreadChannel(deleted ? null : post.channel_id);
   renderThreadTags();
   renderThreadActions();
   if (deleted) {
@@ -640,6 +791,8 @@ function renderMissingThread(id, message) {
   $('#comment-form').hidden = false;
   $('#thread-tags').innerHTML = '';
   $('#thread-tags').hidden = true;
+  $('#thread-channel').innerHTML = '';
+  $('#thread-channel').hidden = true;
   $('#thread-actions').innerHTML = '';
   $('#thread-actions').hidden = true;
   $('#thread-title').innerHTML = '';
@@ -1242,6 +1395,7 @@ mainCommentForm.addEventListener('submit', async (e) => {
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
   if (!$('#confirm-rotate-dialog').hidden) { closeConfirmRotate(); return; }
+  if (!$('#channel-dialog').hidden) { closeChannelDialog(); return; }
   if (!$('#token-dialog').hidden) { closeDialog(); return; }
   if (!$('#mentions-dialog').hidden) { closeMentionsDialog(); return; }
   if (currentView !== VIEW.EMPTY) closeReader();
