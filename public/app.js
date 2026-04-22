@@ -5,7 +5,8 @@ const MENTIONS_SEEN_KEY = 'anonforum.mentionsSeen';
 // Authoritative list lives on the server (REACTION_KIND_SET in server.js).
 // Kept in sync manually — if you change one, change the other.
 const REACTION_KINDS = ['👍', '❤️', '😂', '😮', '😢', '🎉'];
-const MENTION_IN_TEXT_RE = /@([a-f0-9]{8})|#(\d{1,10})/g;
+const PSEUDONYM_RE = /^[a-f0-9]{8}$/;
+const MENTION_IN_TEXT_RE = /@([A-Za-z0-9_]{3,32})|#(\d{1,10})/g;
 const MAX_VISUAL_DEPTH = 4;
 const MENTION_POLL_MS = 60_000;
 
@@ -48,13 +49,19 @@ function getToken() {
     if (!raw) return null;
     const t = JSON.parse(raw);
     if (!t.token || !t.pseudonym || !t.expires_at || t.expires_at < Date.now()) return null;
-    return t;
+    return { ...t, display_name: t.display_name || t.pseudonym };
   } catch {
     return null;
   }
 }
 function setToken(t) { localStorage.setItem(TOKEN_STORE_KEY, JSON.stringify(t)); }
 function clearToken() { localStorage.removeItem(TOKEN_STORE_KEY); }
+function tokenDisplayName(t) { return t ? (t.display_name || t.pseudonym) : null; }
+function tokenIdentityLabel(t) {
+  if (!t) return '未领取令牌 — 点击获取';
+  const displayName = tokenDisplayName(t);
+  return displayName !== t.pseudonym ? `身份：@${displayName}` : `匿名 ID：${t.pseudonym}`;
+}
 
 // "Did I react?" is a client-only concept: the server never returns per-user
 // reaction state. Keyed by pseudonym so rotating/losing the token drops it.
@@ -78,20 +85,21 @@ function setMyReaction(pseudonym, postId, kind, on) {
   localStorage.setItem(MY_REACTIONS_KEY, JSON.stringify(all));
 }
 
-// Mention-inbox read state, keyed by pseudonym (same TTL boundary as token).
-function getMentionSeen(pseudonym) {
-  if (!pseudonym) return 0;
+// Mention-inbox read state is keyed by the inbox target: per-token for
+// anonymous posts, per-username for public admin handles.
+function getMentionSeen(key) {
+  if (!key) return 0;
   try {
     const all = JSON.parse(localStorage.getItem(MENTIONS_SEEN_KEY) || '{}');
-    return all[pseudonym] || 0;
+    return all[key] || 0;
   } catch { return 0; }
 }
-function setMentionSeen(pseudonym, ms) {
-  if (!pseudonym) return;
+function setMentionSeen(key, ms) {
+  if (!key) return;
   let all;
   try { all = JSON.parse(localStorage.getItem(MENTIONS_SEEN_KEY) || '{}'); }
   catch { all = {}; }
-  all[pseudonym] = ms;
+  all[key] = ms;
   localStorage.setItem(MENTIONS_SEEN_KEY, JSON.stringify(all));
 }
 
@@ -100,13 +108,19 @@ function fmtMeta(pseudonym, createdAt, editedAt) {
   const base = `${pseudonym} · ${fmtDate(createdAt)}`;
   return editedAt ? `${base} · 已编辑` : base;
 }
-// Deterministic hue in [0, 360) from an 8-char hex pseudonym. The hue
-// is inherited via a CSS custom property so author-colored text and
-// borders cascade into inner `.meta` nodes without extra selectors.
+// Deterministic hue in [0, 360) from either an 8-char pseudonym or a
+// public admin username. The hue is inherited via a CSS custom property
+// so author-colored text and borders cascade into inner `.meta` nodes
+// without extra selectors.
 function hueFromPseudonym(p) {
-  if (typeof p !== 'string' || p.length < 2) return 140;
-  const n = parseInt(p.slice(0, 6), 16);
-  return Number.isFinite(n) ? n % 360 : 140;
+  if (typeof p !== 'string' || !p) return 140;
+  if (PSEUDONYM_RE.test(p)) {
+    const n = parseInt(p.slice(0, 6), 16);
+    if (Number.isFinite(n)) return n % 360;
+  }
+  let h = 0;
+  for (let i = 0; i < p.length; i++) h = (h * 31 + p.charCodeAt(i)) % 360;
+  return h;
 }
 function applyIdHue(node, pseudonym) {
   if (!node || !pseudonym) return;
@@ -127,13 +141,47 @@ let currentThread = null;
 let currentComments = [];
 let currentPostPseudonym = null;
 let currentPostTags = [];
-let currentPostOwned = false;
+let currentPostCanDelete = false;
 let feedPosts = [];
 let filterState = { kind: null, value: null };
 let mentionPollTimer = null;
 let lastMentions = [];
 let channels = [];
 let isAdmin = false;
+let currentUsername = null;
+let adminHandles = [];
+let adminHandleLookup = new Map();
+
+function canonicalMentionHandle(handle) {
+  if (typeof handle !== 'string') return null;
+  const adminHandle = adminHandleLookup.get(handle.toLowerCase());
+  if (adminHandle) return adminHandle;
+  return PSEUDONYM_RE.test(handle) ? handle : null;
+}
+
+function currentMentionTarget(t = getToken()) {
+  if (isAdmin && currentUsername) return currentUsername;
+  return t ? tokenDisplayName(t) : null;
+}
+
+function mentionInboxKey(t = getToken()) {
+  if (isAdmin && currentUsername) return `admin:${currentUsername.toLowerCase()}`;
+  return t && t.pseudonym ? `token:${t.pseudonym}` : null;
+}
+
+function ownsAuthorKey(authorKey, t = getToken()) {
+  return !!(authorKey && t && t.pseudonym === authorKey);
+}
+
+function canDeleteAuthor(authorKey, t = getToken()) {
+  return isAdmin || ownsAuthorKey(authorKey, t);
+}
+
+function deleteRequestBody() {
+  const t = getToken();
+  if (t) return { token: t.token };
+  return isAdmin ? {} : null;
+}
 
 function channelById(id) {
   if (id == null) return null;
@@ -170,8 +218,7 @@ function renderTokenChip() {
   const chip = $('#token-toggle');
   const text = $('#token-chip-text');
   chip.classList.toggle('active', !!t);
-  text.textContent = t ? `匿名 ID：${t.pseudonym}` : '未领取令牌 — 点击获取';
-  if (!t) $('#mention-dot').hidden = true;
+  text.textContent = tokenIdentityLabel(t);
 }
 
 function renderTokenBox() {
@@ -183,7 +230,7 @@ function renderTokenBox() {
   box.appendChild(el('div', { textContent: t.token }));
   box.appendChild(el('div', {
     className: 'muted',
-    textContent: `约 ${hrs} 小时后过期 · 匿名 ID：${t.pseudonym}`,
+    textContent: `约 ${hrs} 小时后过期 · ${tokenIdentityLabel(t)}`,
   }));
 }
 
@@ -226,8 +273,9 @@ function closeMentionsDialog() { $('#mentions-dialog').hidden = true; }
 function openConfirmRotate() {
   const t = getToken();
   const old = $('#confirm-rotate-old-pseudo');
-  old.textContent = t ? t.pseudonym : '—';
-  if (t) applyIdHue(old, t.pseudonym); else { delete old.dataset.pseudonym; old.style.removeProperty('--id-hue'); }
+  const displayName = tokenDisplayName(t);
+  old.textContent = displayName ? `@${displayName}` : '—';
+  if (displayName) applyIdHue(old, displayName); else { delete old.dataset.pseudonym; old.style.removeProperty('--id-hue'); }
   $('#confirm-rotate-err').textContent = '';
   $('#confirm-rotate-dialog').hidden = false;
 }
@@ -274,7 +322,10 @@ async function refreshMe() {
   try {
     const me = await api('GET', '/api/me');
     tokenQuota = { remaining: me.tokens_remaining, max: me.max_tokens_per_day };
+    currentUsername = me.username;
     isAdmin = !!me.admin;
+    adminHandles = Array.isArray(me.admin_handles) ? me.admin_handles : [];
+    adminHandleLookup = new Map(adminHandles.map((h) => [h.toLowerCase(), h]));
     $('#new-channel-btn').hidden = !isAdmin;
     $('#auth-view').hidden = true;
     $('#forum-view').hidden = false;
@@ -296,9 +347,15 @@ async function refreshMe() {
     schedulePollingMentions();
     refreshMentions({ silent: true }).catch(() => {});
   } catch {
+    currentUsername = null;
+    isAdmin = false;
+    adminHandles = [];
+    adminHandleLookup = new Map();
+    lastMentions = [];
     $('#auth-view').hidden = false;
     $('#forum-view').hidden = true;
     $('#userbar').innerHTML = '';
+    $('#mention-dot').hidden = true;
     stopPollingMentions();
   }
 }
@@ -329,7 +386,12 @@ async function issueNewToken(errNode) {
   errNode.textContent = '';
   try {
     const r = await api('POST', '/api/token');
-    setToken({ token: r.token, pseudonym: r.pseudonym, expires_at: r.expires_at });
+    setToken({
+      token: r.token,
+      pseudonym: r.pseudonym,
+      display_name: r.display_name || r.pseudonym,
+      expires_at: r.expires_at,
+    });
     if (r.tokens_remaining != null) {
       tokenQuota = { remaining: r.tokens_remaining, max: r.max_tokens_per_day };
     }
@@ -589,6 +651,10 @@ function openCompose() {
   const f = $('#post-form');
   f.reset();
   renderComposeChannels();
+  $('.compose-hint').textContent = isAdmin
+    ? '管理员发言会直接显示用户名；其他令牌能力仍按 24 小时窗口管理。'
+    : '服务器只记录令牌的哈希，无法把帖子和你连起来。';
+  $('#post-submit').textContent = isAdmin ? '公开发布' : '匿名发布';
   // Preselect the channel we're filtering on, so the new post lands there.
   if (filterState.kind === 'channel' && channelById(filterState.value)) {
     f.channel_id.value = String(filterState.value);
@@ -635,8 +701,9 @@ $('#post-form').addEventListener('submit', async (e) => {
 
 // --- Thread view ---
 
-function knownPseudonyms() {
+function knownMentionHandles() {
   const set = new Set();
+  for (const handle of adminHandles) set.add(handle);
   if (currentPostPseudonym) set.add(currentPostPseudonym);
   for (const c of currentComments) set.add(c.pseudonym);
   return [...set];
@@ -687,7 +754,7 @@ function renderThreadChannel(channelId) {
 function renderThreadActions() {
   const box = $('#thread-actions');
   box.innerHTML = '';
-  if (!currentPostOwned) { box.hidden = true; return; }
+  if (!currentPostCanDelete) { box.hidden = true; return; }
   box.hidden = false;
   const del = el('button', { type: 'button', className: 'ghost small danger', textContent: '删除' });
   del.addEventListener('click', () => deletePost());
@@ -697,10 +764,10 @@ function renderThreadActions() {
 async function deletePost() {
   if (currentThread == null) return;
   if (!confirm('删除这个帖子？正文会被清空，评论仍会保留。')) return;
-  const t = getToken();
-  if (!t) { openDialog(); return; }
+  const body = deleteRequestBody();
+  if (!body) { openDialog(); return; }
   try {
-    await api('DELETE', `/api/posts/${currentThread}`, { token: t.token });
+    await api('DELETE', `/api/posts/${currentThread}`, body);
     const gone = currentThread;
     // Remove from feed cache + DOM (deleted posts are hidden from the feed).
     feedPosts = feedPosts.filter((p) => p.id !== gone);
@@ -730,8 +797,7 @@ async function openThread(id, { pushUrl = true } = {}) {
   currentComments = comments.slice();
   currentPostPseudonym = deleted ? null : post.pseudonym;
   currentPostTags = deleted ? [] : (tags || []);
-  const me = getToken();
-  currentPostOwned = !deleted && !!(me && me.pseudonym === post.pseudonym);
+  currentPostCanDelete = !deleted && canDeleteAuthor(post.author_key);
 
   $('#thread-title').innerHTML = '';
   $('#thread-title').append(
@@ -785,7 +851,7 @@ function renderMissingThread(id, message) {
   currentComments = [];
   currentPostPseudonym = null;
   currentPostTags = [];
-  currentPostOwned = false;
+  currentPostCanDelete = false;
   $('#reactions').innerHTML = '';
   $('#reactions').hidden = false;
   $('#comment-form').hidden = false;
@@ -832,13 +898,15 @@ function renderComment(c, depth) {
   const replyBtn = el('button', { className: 'link-btn', type: 'button', textContent: '回复' });
   replyBtn.addEventListener('click', () => toggleReplyForm(node, c));
   actions.appendChild(replyBtn);
-  const me = getToken();
-  if (me && me.pseudonym === c.pseudonym) {
+  if (ownsAuthorKey(c.author_key)) {
     const editBtn = el('button', { className: 'link-btn', type: 'button', textContent: '编辑' });
     editBtn.addEventListener('click', () => startEditComment(node, c));
+    actions.append(editBtn);
+  }
+  if (canDeleteAuthor(c.author_key)) {
     const delBtn = el('button', { className: 'link-btn danger', type: 'button', textContent: '删除' });
     delBtn.addEventListener('click', () => deleteComment(c));
-    actions.append(editBtn, delBtn);
+    actions.append(delBtn);
   }
   const node = el('div', { className: 'comment' }, [
     metaLine(c.pseudonym, c.created_at, c.edited_at),
@@ -932,10 +1000,10 @@ function startEditComment(commentNode, c) {
 
 async function deleteComment(c) {
   if (!confirm('删除这条评论？')) return;
-  const t = getToken();
-  if (!t) { openDialog(); return; }
+  const body = deleteRequestBody();
+  if (!body) { openDialog(); return; }
   try {
-    await api('DELETE', `/api/posts/${currentThread}/comments/${c.id}`, { token: t.token });
+    await api('DELETE', `/api/posts/${currentThread}/comments/${c.id}`, body);
     currentComments = currentComments.filter((x) => x.id !== c.id);
     const node = $(`.comment[data-comment-id="${c.id}"]`);
     if (node) node.remove();
@@ -1066,16 +1134,16 @@ async function toggleReaction(kind) {
 
 async function refreshMentions({ silent = false, open = false } = {}) {
   const t = getToken();
-  if (!t) {
+  if (!t && !isAdmin) {
     lastMentions = [];
     $('#mention-dot').hidden = true;
     if (open) openMentionsDialog();
     return;
   }
   try {
-    const r = await api('POST', '/api/mentions', { token: t.token });
+    const r = await api('POST', '/api/mentions', t ? { token: t.token } : {});
     lastMentions = r.mentions;
-    const seen = getMentionSeen(t.pseudonym);
+    const seen = getMentionSeen(mentionInboxKey(t));
     const unread = lastMentions.filter((m) => m.created_at > seen).length;
     $('#mention-dot').hidden = unread === 0;
   } catch {
@@ -1087,11 +1155,12 @@ async function refreshMentions({ silent = false, open = false } = {}) {
 function openMentionsDialog() {
   const t = getToken();
   const pseudo = $('#mentions-pseudo');
-  pseudo.textContent = t ? t.pseudonym : '—';
-  if (t) applyIdHue(pseudo, t.pseudonym); else { delete pseudo.dataset.pseudonym; pseudo.style.removeProperty('--id-hue'); }
+  const target = currentMentionTarget(t);
+  pseudo.textContent = target ? `@${target}` : '—';
+  if (target) applyIdHue(pseudo, target); else { delete pseudo.dataset.pseudonym; pseudo.style.removeProperty('--id-hue'); }
   const box = $('#mentions-list');
   box.innerHTML = '';
-  if (!t) {
+  if (!target) {
     box.appendChild(el('div', { className: 'muted', textContent: '需要先领取发帖令牌。' }));
   } else if (!lastMentions.length) {
     box.appendChild(el('div', { className: 'muted', textContent: '过去 24 小时内没有新的提醒。' }));
@@ -1099,8 +1168,8 @@ function openMentionsDialog() {
     for (const m of lastMentions) box.appendChild(renderMentionItem(m));
   }
   $('#mentions-dialog').hidden = false;
-  if (t) {
-    setMentionSeen(t.pseudonym, Date.now());
+  if (target) {
+    setMentionSeen(mentionInboxKey(t), Date.now());
     $('#mention-dot').hidden = true;
   }
 }
@@ -1149,11 +1218,16 @@ function renderTextWithMentions(text) {
   while ((m = MENTION_IN_TEXT_RE.exec(text))) {
     if (m.index > last) frag.appendChild(document.createTextNode(text.slice(last, m.index)));
     if (m[1]) {
-      const p = m[1];
-      const chip = el('a', { className: 'mention', href: '#', textContent: `@${p}` });
-      applyIdHue(chip, p);
-      chip.addEventListener('click', (e) => { e.preventDefault(); jumpToPseudonym(p); });
-      frag.appendChild(chip);
+      const raw = m[1];
+      const target = canonicalMentionHandle(raw);
+      if (!target) {
+        frag.appendChild(document.createTextNode(m[0]));
+      } else {
+        const chip = el('a', { className: 'mention', href: '#', textContent: `@${raw}` });
+        applyIdHue(chip, target);
+        chip.addEventListener('click', (e) => { e.preventDefault(); jumpToPseudonym(target); });
+        frag.appendChild(chip);
+      }
     } else {
       const id = parseInt(m[2], 10);
       const chip = el('a', { className: 'mention post-ref', href: '#', textContent: `#${id}` });
@@ -1306,8 +1380,8 @@ function attachMentionAutocomplete(textarea) {
   const render = (q) => {
     pop.innerHTML = '';
     if (kind === '@') {
-      items = knownPseudonyms()
-        .filter((p) => p.startsWith(q))
+      items = knownMentionHandles()
+        .filter((p) => p.toLowerCase().startsWith(q))
         .slice(0, 6)
         .map((p) => ({ value: `@${p}`, label: `@${p}` }));
     } else {

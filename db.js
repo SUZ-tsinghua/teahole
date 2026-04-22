@@ -23,11 +23,12 @@ CREATE TABLE IF NOT EXISTS post_tokens (
 );
 CREATE INDEX IF NOT EXISTS idx_post_tokens_expires ON post_tokens(expires_at);
 
--- Posts carry an opaque per-token pseudonym, never a user_id. The
--- token_hash column is used ONLY to gate "author can edit/delete" checks;
--- once the corresponding token row in post_tokens has expired and been
--- purged, this hash no longer joins to anything — the post is orphaned
--- from any identity, which is exactly the intended state.
+-- Posts carry a public-facing handle but never a user_id: regular
+-- members get an opaque per-token pseudonym; live admins deliberately
+-- post under their username. The token_hash column is used ONLY to gate
+-- "author can edit/delete" checks; once the corresponding token row in
+-- post_tokens has expired and been purged, this hash no longer joins to
+-- anything, leaving only the public display handle on the content row.
 CREATE TABLE IF NOT EXISTS posts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   pseudonym TEXT NOT NULL,
@@ -87,10 +88,11 @@ CREATE TABLE IF NOT EXISTS post_tags (
 );
 CREATE INDEX IF NOT EXISTS idx_post_tags_tag ON post_tags(tag);
 
--- Mentions inbox: keyed by target pseudonym (8 hex chars) because that's
--- all the sender types. rotate() ages rows out after TOKEN_TTL_HOURS so
--- stale mentions can't bleed into a new token holder that coincidentally
--- picks up the same 8-char prefix. FK cascades catch post/comment delete.
+-- Mentions inbox: keyed by target handle, which is either a token-scoped
+-- 8-char pseudonym or a public admin username. rotate() ages rows out
+-- after TOKEN_TTL_HOURS so stale pseudonym mentions can't bleed into a
+-- new token holder that coincidentally picks up the same 8-char prefix.
+-- FK cascades catch post/comment delete.
 CREATE TABLE IF NOT EXISTS mentions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   target_pseudonym TEXT NOT NULL,

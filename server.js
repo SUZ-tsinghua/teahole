@@ -24,10 +24,14 @@ const CHANNEL_SLUG_RE = /^[a-z0-9_-]{1,32}$/;
 const CHANNEL_NAME_MAX = 60;
 const CHANNEL_DESC_MAX = 200;
 
-const SESSION_COOKIE_OPTS = {
+const SESSION_COOKIE_BASE_OPTS = {
   httpOnly: true,
   sameSite: 'lax',
   secure: process.env.NODE_ENV === 'production',
+};
+
+const SESSION_COOKIE_OPTS = {
+  ...SESSION_COOKIE_BASE_OPTS,
   maxAge: SESSION_TTL_DAYS * 24 * 3600 * 1000,
 };
 
@@ -73,10 +77,36 @@ app.use(express.json({ limit: '32kb' }));
 app.use(cookieParser());
 app.use(express.static(path.join(__dirname, 'public')));
 
+function qualify(alias, col) {
+  return alias ? `${alias}.${col}` : col;
+}
+
+function authorKeySql(alias = '') {
+  const tokenHash = qualify(alias, 'token_hash');
+  return `CASE WHEN ${tokenHash} IS NOT NULL THEN substr(${tokenHash}, 1, 8) END AS author_key`;
+}
+
+function postPreviewSql(alias = '') {
+  const id = qualify(alias, 'id');
+  const pseudonym = qualify(alias, 'pseudonym');
+  const title = qualify(alias, 'title');
+  const content = qualify(alias, 'content');
+  const createdAt = qualify(alias, 'created_at');
+  const editedAt = qualify(alias, 'edited_at');
+  const channelId = qualify(alias, 'channel_id');
+  return `${id}, ${pseudonym},
+          ${authorKeySql(alias)},
+          ${title},
+          substr(${content}, 1, ${PREVIEW_BYTES}) AS content,
+          length(${content}) > ${PREVIEW_BYTES} AS truncated,
+          ${createdAt}, ${editedAt}, ${channelId}`;
+}
+
 const Q = {
   findUserByName:  db.prepare('SELECT id, username, password_hash, is_admin FROM users WHERE username = ? COLLATE NOCASE'),
   usernameExists:  db.prepare('SELECT 1 FROM users WHERE username = ? COLLATE NOCASE'),
   isUserAdmin:     db.prepare('SELECT is_admin FROM users WHERE id = ?'),
+  listAdminHandles: db.prepare('SELECT username FROM users WHERE is_admin = 1 ORDER BY username COLLATE NOCASE ASC'),
   insertUser:      db.prepare('INSERT INTO users (username, password_hash, created_at) VALUES (?, ?, ?)'),
   findUserQuota:   db.prepare('SELECT tokens_issued_date, tokens_issued_count FROM users WHERE id = ?'),
   bumpTokenCount:  db.prepare('UPDATE users SET tokens_issued_date = ?, tokens_issued_count = ? WHERE id = ?'),
@@ -101,27 +131,18 @@ const Q = {
        AND token_hash NOT IN (SELECT token_hash FROM post_tokens)`
   ),
   listPosts:       db.prepare(
-    `SELECT id, pseudonym, title,
-            substr(content, 1, ${PREVIEW_BYTES}) AS content,
-            length(content) > ${PREVIEW_BYTES} AS truncated,
-            created_at, edited_at, channel_id
+    `SELECT ${postPreviewSql()}
      FROM posts WHERE deleted_at IS NULL
      ORDER BY created_at DESC LIMIT ${FEED_LIMIT}`
   ),
   listPostsByTag:  db.prepare(
-    `SELECT p.id, p.pseudonym, p.title,
-            substr(p.content, 1, ${PREVIEW_BYTES}) AS content,
-            length(p.content) > ${PREVIEW_BYTES} AS truncated,
-            p.created_at, p.edited_at, p.channel_id
+    `SELECT ${postPreviewSql('p')}
      FROM posts p JOIN post_tags pt ON pt.post_id = p.id
      WHERE pt.tag = ? AND p.deleted_at IS NULL
      ORDER BY p.created_at DESC LIMIT ${FEED_LIMIT}`
   ),
   listPostsByChannel: db.prepare(
-    `SELECT id, pseudonym, title,
-            substr(content, 1, ${PREVIEW_BYTES}) AS content,
-            length(content) > ${PREVIEW_BYTES} AS truncated,
-            created_at, edited_at, channel_id
+    `SELECT ${postPreviewSql()}
      FROM posts WHERE channel_id = ? AND deleted_at IS NULL
      ORDER BY created_at DESC LIMIT ${FEED_LIMIT}`
   ),
@@ -130,9 +151,24 @@ const Q = {
      WHERE deleted_at IS NULL
      ORDER BY created_at DESC LIMIT ${RSS_LIMIT}`
   ),
-  getPost:         db.prepare('SELECT id, pseudonym, title, content, created_at, edited_at, deleted_at, token_hash, channel_id FROM posts WHERE id = ?'),
-  listComments:    db.prepare('SELECT id, parent_id, pseudonym, content, created_at, edited_at FROM comments WHERE post_id = ? ORDER BY created_at ASC'),
-  getComment:      db.prepare('SELECT id, post_id, pseudonym, content, token_hash FROM comments WHERE id = ?'),
+  getPost:         db.prepare(
+    `SELECT id, pseudonym,
+            ${authorKeySql()},
+            title, content, created_at, edited_at, deleted_at, token_hash, channel_id
+     FROM posts WHERE id = ?`
+  ),
+  listComments:    db.prepare(
+    `SELECT id, parent_id, pseudonym,
+            ${authorKeySql()},
+            content, created_at, edited_at
+     FROM comments WHERE post_id = ? ORDER BY created_at ASC`
+  ),
+  getComment:      db.prepare(
+    `SELECT id, post_id, pseudonym,
+            ${authorKeySql()},
+            content, token_hash
+     FROM comments WHERE id = ?`
+  ),
   getCommentPost:  db.prepare('SELECT post_id FROM comments WHERE id = ?'),
   insertPost:      db.prepare('INSERT INTO posts (pseudonym, title, content, created_at, token_hash, channel_id) VALUES (?, ?, ?, ?, ?, ?)'),
   insertComment:   db.prepare('INSERT INTO comments (post_id, parent_id, pseudonym, content, created_at, token_hash) VALUES (?, ?, ?, ?, ?, ?)'),
@@ -176,10 +212,7 @@ const Q = {
      ORDER BY m.created_at DESC LIMIT ${MENTIONS_LIMIT}`
   ),
   searchPosts:     db.prepare(
-    `SELECT p.id, p.pseudonym, p.title,
-            substr(p.content, 1, ${PREVIEW_BYTES}) AS content,
-            length(p.content) > ${PREVIEW_BYTES} AS truncated,
-            p.created_at, p.edited_at, p.channel_id,
+    `SELECT ${postPreviewSql('p')},
             bm25(posts_fts) AS rank
      FROM posts_fts JOIN posts p ON p.id = posts_fts.rowid
      WHERE posts_fts MATCH ? AND p.deleted_at IS NULL
@@ -198,14 +231,26 @@ const Q = {
 
 const REACTION_KINDS = ['👍', '❤️', '😂', '😮', '😢', '🎉'];
 const REACTION_KIND_SET = new Set(REACTION_KINDS);
-const MENTION_IN_CONTENT_RE = /@([a-f0-9]{8})/g;
+const PSEUDONYM_RE = /^[a-f0-9]{8}$/;
+const MENTION_IN_CONTENT_RE = /@([A-Za-z0-9_]{3,32})/g;
 
 function extractMentionTargets(text) {
   if (typeof text !== 'string') return [];
+  const adminHandles = new Map(
+    Q.listAdminHandles.all().map((row) => [row.username.toLowerCase(), row.username])
+  );
   const set = new Set();
   let m;
   MENTION_IN_CONTENT_RE.lastIndex = 0;
-  while ((m = MENTION_IN_CONTENT_RE.exec(text))) set.add(m[1]);
+  while ((m = MENTION_IN_CONTENT_RE.exec(text))) {
+    const raw = m[1];
+    const adminHandle = adminHandles.get(raw.toLowerCase());
+    if (adminHandle) {
+      set.add(adminHandle);
+    } else if (PSEUDONYM_RE.test(raw)) {
+      set.add(raw);
+    }
+  }
   return [...set];
 }
 
@@ -225,6 +270,7 @@ function mapPostPreview(r) {
   return {
     id: r.id,
     pseudonym: r.pseudonym,
+    author_key: r.author_key,
     title: r.title,
     content: r.content,
     truncated: !!r.truncated,
@@ -348,7 +394,7 @@ function isLiveAdmin(uid) {
 }
 
 function requireAdmin(req, res, next) {
-  if (!req.user || !req.user.a || !isLiveAdmin(req.user.uid)) {
+  if (!req.user || !isLiveAdmin(req.user.uid)) {
     return res.status(403).json({ error: '需要管理员权限' });
   }
   next();
@@ -433,7 +479,12 @@ function resolveToken(token) {
   const tokenHash = hashToken(token);
   const row = Q.findToken.get(tokenHash);
   if (!row || row.expires_at < Date.now()) return null;
-  return { tokenHash, pseudonym: pseudonymFromHash(tokenHash) };
+  return { tokenHash, authorKey: pseudonymFromHash(tokenHash) };
+}
+
+function publicHandleFor(user, authorKey) {
+  if (user && isLiveAdmin(user.uid)) return user.u;
+  return authorKey;
 }
 
 // Recompute the mention pointers for a piece of content. Old mentions for
@@ -504,15 +555,17 @@ app.post('/api/logout', (req, res) => {
       }
     } catch {}
   }
-  res.clearCookie('session', SESSION_COOKIE_OPTS);
+  res.clearCookie('session', SESSION_COOKIE_BASE_OPTS);
   res.json({ ok: true });
 });
 
 app.get('/api/me', requireSession, (req, res) => {
   const q = quotaFor(req.user.uid);
+  const admin = isLiveAdmin(req.user.uid);
   res.json({
     username: req.user.u,
-    admin: !!req.user.a,
+    admin,
+    admin_handles: Q.listAdminHandles.all().map((row) => row.username),
     tokens_remaining: q.remaining,
     max_tokens_per_day: q.max,
   });
@@ -527,13 +580,15 @@ app.post('/api/token', requireSession, (req, res) => {
 
   const token = crypto.randomBytes(32).toString('hex');
   const tokenHash = hashToken(token);
+  const authorKey = pseudonymFromHash(tokenHash);
   const expiresAt = Date.now() + TOKEN_TTL_HOURS * 3600 * 1000;
   Q.insertToken.run(tokenHash, expiresAt);
 
   const q = quotaFor(req.user.uid);
   res.json({
     token,
-    pseudonym: pseudonymFromHash(tokenHash),
+    pseudonym: authorKey,
+    display_name: publicHandleFor(req.user, authorKey),
     expires_at: expiresAt,
     tokens_remaining: q.remaining,
     max_tokens_per_day: q.max,
@@ -568,6 +623,7 @@ app.post('/api/posts', requireSession, (req, res) => {
   const { token, title, content, tags, channel_id } = req.body || {};
   const resolved = resolveToken(token);
   if (!resolved) return res.status(401).json({ error: '发帖令牌无效或已过期' });
+  const publicHandle = publicHandleFor(req.user, resolved.authorKey);
   const t = sanitizeText(title, 200);
   const c = sanitizeText(content, 10000);
   if (!t || !c) return res.status(400).json({ error: '标题和内容不能为空' });
@@ -577,13 +633,14 @@ app.post('/api/posts', requireSession, (req, res) => {
   if (!ch.ok) return res.status(400).json({ error: ch.error });
 
   const createdAt = Date.now();
-  const info = Q.insertPost.run(resolved.pseudonym, t, c, createdAt, resolved.tokenHash, ch.channelId);
+  const info = Q.insertPost.run(publicHandle, t, c, createdAt, resolved.tokenHash, ch.channelId);
   if (cleanTags.length) setPostTagsTx(info.lastInsertRowid, cleanTags);
   recordMentionsForPost(info.lastInsertRowid, c, createdAt);
 
   res.json({
     id: info.lastInsertRowid,
-    pseudonym: resolved.pseudonym,
+    pseudonym: publicHandle,
+    author_key: resolved.authorKey,
     title: t,
     content: c,
     truncated: false,
@@ -627,6 +684,7 @@ app.post('/api/posts/:id/comments', requireSession, (req, res) => {
   const { token, content, parent_id } = req.body || {};
   const resolved = resolveToken(token);
   if (!resolved) return res.status(401).json({ error: '发帖令牌无效或已过期' });
+  const publicHandle = publicHandleFor(req.user, resolved.authorKey);
   const c = sanitizeText(content, 5000);
   if (!c) return res.status(400).json({ error: '评论内容不能为空' });
   if (!Q.isPostAlive.get(id)) {
@@ -643,12 +701,13 @@ app.post('/api/posts/:id/comments', requireSession, (req, res) => {
 
   const createdAt = Date.now();
   try {
-    const info = Q.insertComment.run(id, parentId, resolved.pseudonym, c, createdAt, resolved.tokenHash);
+    const info = Q.insertComment.run(id, parentId, publicHandle, c, createdAt, resolved.tokenHash);
     recordMentionsForComment(id, info.lastInsertRowid, c, createdAt);
     res.json({
       id: info.lastInsertRowid,
       parent_id: parentId,
-      pseudonym: resolved.pseudonym,
+      pseudonym: publicHandle,
+      author_key: resolved.authorKey,
       content: c,
       created_at: createdAt,
       edited_at: null,
@@ -680,7 +739,7 @@ app.put('/api/posts/:pid/comments/:id', requireSession, (req, res) => {
   clearMentionsForComment.run(id);
   recordMentionsForComment(postId, id, c, editedAt);
 
-  res.json({ id, pseudonym: existing.pseudonym, content: c, edited_at: editedAt });
+  res.json({ id, pseudonym: existing.pseudonym, author_key: existing.author_key, content: c, edited_at: editedAt });
 });
 
 // Author OR admin can delete. Author uses token; admin uses their session.
@@ -697,7 +756,7 @@ app.delete('/api/posts/:id', requireSession, (req, res) => {
   const id = parseId(req, res); if (id == null) return;
   const { token } = req.body || {};
   const now = Date.now();
-  if (req.user.a && isLiveAdmin(req.user.uid)) {
+  if (isLiveAdmin(req.user.uid)) {
     const info = Q.softDeletePost.run(now, id);
     if (info.changes === 0) {
       return res.status(Q.postExists.get(id) ? 410 : 404).json({ error: '未找到' });
@@ -722,7 +781,7 @@ app.delete('/api/posts/:pid/comments/:id', requireSession, (req, res) => {
   const { token } = req.body || {};
   const existing = Q.getComment.get(id);
   if (!existing || existing.post_id !== postId) return res.status(404).json({ error: '未找到' });
-  if (req.user.a && isLiveAdmin(req.user.uid)) {
+  if (isLiveAdmin(req.user.uid)) {
     Q.deleteComment.run(id);
     return res.json({ ok: true });
   }
@@ -793,15 +852,19 @@ app.get('/api/search', requireSession, (req, res) => {
   res.json(rows);
 });
 
-// @mention inbox for the current posting token. Returns mentions whose
-// target_pseudonym matches the token's pseudonym, from the last
-// TOKEN_TTL_HOURS window so stale mentions never surface to a new holder.
+// @mention inbox for either the current token's pseudonym or, for admins,
+// their public username. Rows still age out after TOKEN_TTL_HOURS.
 app.post('/api/mentions', requireSession, (req, res) => {
   const { token } = req.body || {};
-  const resolved = resolveToken(token);
-  if (!resolved) return res.status(401).json({ error: '发帖令牌无效或已过期' });
+  const target = isLiveAdmin(req.user.uid)
+    ? req.user.u
+    : (() => {
+        const resolved = resolveToken(token);
+        return resolved && resolved.authorKey;
+      })();
+  if (!target) return res.status(401).json({ error: '发帖令牌无效或已过期' });
   const cutoff = Date.now() - TOKEN_TTL_HOURS * 3600 * 1000;
-  const rows = Q.listMentions.all(resolved.pseudonym, cutoff);
+  const rows = Q.listMentions.all(target, cutoff);
   res.json({ mentions: rows, now: Date.now() });
 });
 

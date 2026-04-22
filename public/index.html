@@ -12,7 +12,7 @@
   <div class="brand">
     <span class="brand-dot"></span>
     <span>匿名论坛</span>
-    <span class="brand-sub">登录才能看见，发帖不留身份</span>
+    <span class="brand-sub">登录才能看见，默认发帖不留身份</span>
   </div>
   <div class="header-actions">
     <button id="theme-toggle" class="icon-btn" type="button" aria-label="切换主题" title="切换亮/暗主题">
@@ -32,7 +32,7 @@
   <section id="auth-view" class="auth" hidden>
     <div class="auth-card">
       <h2>欢迎回来</h2>
-      <p class="muted">阅读与发帖都需要登录，但你的发言不会和账号关联。</p>
+      <p class="muted">阅读与发帖都需要登录。普通账号默认匿名；管理员会直接显示用户名，方便大家 @feedback。</p>
       <form id="login-form">
         <input name="username" placeholder="用户名" autocomplete="username" required>
         <input name="password" type="password" placeholder="密码" autocomplete="current-password" required>
@@ -84,7 +84,7 @@
         <div class="empty-inner">
           <div class="empty-mark"></div>
           <h2>选一个帖子开始阅读</h2>
-          <p class="muted">或点击「发新帖」分享想法。每枚令牌对应一个匿名 ID。</p>
+          <p class="muted">或点击「发新帖」分享想法。每枚令牌对应一个发言身份；管理员会直接显示用户名。</p>
         </div>
       </div>
 
@@ -148,11 +148,11 @@
     <div class="dialog-backdrop" data-close="confirm-rotate"></div>
     <div class="dialog-card">
       <h2>轮换令牌？</h2>
-      <p class="muted">这会用掉今天的一枚令牌名额。新匿名 ID 会替换当前的 <span id="confirm-rotate-old-pseudo">—</span>。</p>
+      <p class="muted">这会用掉今天的一枚令牌名额。新的令牌会替换当前的发言上下文（<span id="confirm-rotate-old-pseudo">—</span>）。</p>
       <ul class="warn-list">
         <li>你将无法再<strong>删除</strong>用旧令牌发的帖子或<strong>编辑/删除</strong>用旧令牌发的评论。</li>
         <li>你在旧令牌下对他人帖子的反应（👍/❤️ 等）会保留计数，但<strong>无法再取消</strong>。</li>
-        <li>发往旧匿名 ID 的 <span class="warn-kw">@提醒</span> 将不再出现在你的收件箱里。</li>
+        <li>发往旧令牌身份的 <span class="warn-kw">@提醒</span> 可能不再出现在你的收件箱里。</li>
       </ul>
       <div class="row">
         <button id="confirm-rotate-yes">确认轮换</button>
@@ -184,7 +184,7 @@
     <div class="dialog-backdrop" data-close="mentions"></div>
     <div class="dialog-card">
       <h2>提到我的</h2>
-      <p class="muted">只显示你当前匿名 ID（<span id="mentions-pseudo">—</span>）的提醒。令牌轮换后提醒自动失效。</p>
+      <p class="muted">只显示最近 24 小时内发往你当前发言身份（<span id="mentions-pseudo">—</span>）的提醒。</p>
       <div id="mentions-list" class="mentions-list"></div>
       <div class="row">
         <button type="button" class="ghost" data-close="mentions">关闭</button>
