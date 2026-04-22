@@ -82,6 +82,10 @@
         </button>
         <div class="foot-links">
           <button id="mentions-btn" type="button" class="foot-link">提醒</button>
+          <button id="followed-btn" type="button" class="foot-link">
+            <span>关注</span>
+            <span id="followed-badge" class="follow-badge" hidden></span>
+          </button>
           <a id="rss-link" class="foot-link" href="/api/feed.xml" target="_blank" rel="noopener">RSS</a>
         </div>
       </div>
@@ -211,6 +215,18 @@
         </div>
         <div class="err" id="bulletin-err"></div>
       </form>
+    </div>
+  </div>
+
+  <div id="followed-dialog" class="dialog" hidden>
+    <div class="dialog-backdrop" data-close="followed"></div>
+    <div class="dialog-card">
+      <h2>关注的帖子</h2>
+      <p class="muted">在打开的帖子页面点击「🔕 关注」可以订阅后续评论，列表按未读评论数排序。</p>
+      <div id="followed-list" class="mentions-list"></div>
+      <div class="row">
+        <button type="button" class="ghost" data-close="followed">关闭</button>
+      </div>
     </div>
   </div>
 

@@ -119,6 +119,19 @@ CREATE TABLE IF NOT EXISTS revoked_sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_revoked_sessions_exp ON revoked_sessions(expires_at);
 
+-- Followed threads: reader-side state only. last_seen_comment_id lets
+-- the client compute unread counts without the server exposing who has
+-- read what in any content-read endpoint.
+CREATE TABLE IF NOT EXISTS followed_posts (
+  user_id INTEGER NOT NULL,
+  post_id INTEGER NOT NULL,
+  followed_at INTEGER NOT NULL,
+  last_seen_comment_id INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (user_id, post_id),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE
+);
+
 -- Per-user channel preferences (pinned / muted). Reader-side state
 -- only; purely a display preference. Each flag is 0/1 so a single row
 -- can hold both. Cascades on user + channel delete.

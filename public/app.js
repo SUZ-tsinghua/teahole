@@ -153,6 +153,8 @@ let savedIds = new Set();
 // Per-user channel prefs: Map<channelId, { pinned, muted }>
 let channelPrefs = new Map();
 let mutedExpanded = false;
+let followedIds = new Set();
+let followedUnreadTotal = 0;
 let isAdmin = false;
 let currentUsername = null;
 let adminHandles = [];
@@ -318,6 +320,7 @@ document.addEventListener('click', (e) => {
   else if (kind === 'confirm-rotate') closeConfirmRotate();
   else if (kind === 'channel') closeChannelDialog();
   else if (kind === 'bulletin') closeBulletinDialog();
+  else if (kind === 'followed') closeFollowedDialog();
   else if (kind === 'reader') closeReader();
 });
 
@@ -375,6 +378,7 @@ async function refreshMe() {
     await loadBulletins();
     await loadSavedIds();
     await loadChannelPrefs();
+    await loadFollowed();
     await loadFeed();
     loadTags().catch(() => {});
     showReader(VIEW.EMPTY);
@@ -723,6 +727,85 @@ async function loadSavedIds() {
   }
 }
 
+let lastFollowedPosts = [];
+async function loadFollowed() {
+  try {
+    const r = await api('GET', '/api/followed');
+    followedIds = new Set(r.ids);
+    lastFollowedPosts = r.posts || [];
+    followedUnreadTotal = lastFollowedPosts.reduce((n, p) => n + (p.unread || 0), 0);
+  } catch {
+    followedIds = new Set();
+    lastFollowedPosts = [];
+    followedUnreadTotal = 0;
+  }
+  renderFollowedBadge();
+}
+
+function renderFollowedBadge() {
+  const dot = $('#followed-badge');
+  if (!dot) return;
+  if (followedUnreadTotal > 0) {
+    dot.hidden = false;
+    dot.textContent = followedUnreadTotal > 99 ? '99+' : String(followedUnreadTotal);
+  } else {
+    dot.hidden = true;
+  }
+}
+
+async function toggleFollow(postId) {
+  const wasFollowed = followedIds.has(postId);
+  try {
+    await api(wasFollowed ? 'DELETE' : 'POST', `/api/followed/${postId}`);
+    if (wasFollowed) followedIds.delete(postId); else followedIds.add(postId);
+    await loadFollowed();
+    renderThreadActions();
+  } catch (err) {
+    alert(err.message);
+  }
+}
+
+async function markFollowedSeen(postId) {
+  if (!followedIds.has(postId)) return;
+  try {
+    await api('POST', `/api/followed/${postId}`);
+    await loadFollowed();
+  } catch {}
+}
+
+function openFollowedDialog() {
+  const box = $('#followed-list');
+  box.innerHTML = '';
+  if (!lastFollowedPosts.length) {
+    box.appendChild(el('div', { className: 'muted', textContent: '还没有关注任何帖子。' }));
+  } else {
+    for (const p of lastFollowedPosts) box.appendChild(renderFollowedItem(p));
+  }
+  $('#followed-dialog').hidden = false;
+}
+function closeFollowedDialog() { $('#followed-dialog').hidden = true; }
+
+function renderFollowedItem(p) {
+  const title = el('div', { className: 'mention-head' });
+  title.appendChild(el('span', { className: 'mention-sender', textContent: `#${p.post_id}` }));
+  title.appendChild(el('span', { textContent: ' ' + p.title }));
+  if (p.unread > 0) {
+    title.appendChild(el('span', { className: 'follow-unread', textContent: `${p.unread} 条新评论` }));
+  }
+  const foot = el('div', { className: 'meta', textContent: `${p.pseudonym} · ${fmtDate(p.created_at)}` });
+  applyIdHue(foot, p.pseudonym);
+  const item = el('div', { className: 'mention-item-card' + (p.unread > 0 ? ' has-unread' : '') }, [title, foot]);
+  item.addEventListener('click', () => {
+    closeFollowedDialog();
+    openThread(p.post_id).catch(() => {});
+  });
+  return item;
+}
+
+$('#followed-btn').addEventListener('click', () => {
+  loadFollowed().finally(() => openFollowedDialog());
+});
+
 async function toggleSaved(postId) {
   const wasSaved = savedIds.has(postId);
   try {
@@ -1059,6 +1142,15 @@ function renderThreadActions() {
     save.addEventListener('click', () => toggleSaved(currentThread));
     buttons.push(save);
   }
+  if (currentThread != null) {
+    const followed = followedIds.has(currentThread);
+    const follow = el('button', {
+      type: 'button', className: 'ghost small' + (followed ? ' is-followed' : ''),
+      textContent: followed ? '🔔 已关注' : '🔕 关注',
+    });
+    follow.addEventListener('click', () => toggleFollow(currentThread));
+    buttons.push(follow);
+  }
   if (currentPostCanDelete) {
     const del = el('button', { type: 'button', className: 'ghost small danger', textContent: '删除' });
     del.addEventListener('click', () => deletePost());
@@ -1155,6 +1247,7 @@ async function openThread(id, { pushUrl = true } = {}) {
   $('#comment-form').hidden = deleted;
   showReader(VIEW.THREAD);
   readerNode.scrollTo({ top: 0, behavior: 'instant' });
+  if (!deleted) markFollowedSeen(id).catch(() => {});
 }
 
 function renderMissingThread(id, message) {
@@ -1514,6 +1607,7 @@ function schedulePollingMentions() {
   stopPollingMentions();
   mentionPollTimer = setInterval(() => {
     refreshMentions({ silent: true }).catch(() => {});
+    loadFollowed().catch(() => {});
   }, MENTION_POLL_MS);
 }
 function stopPollingMentions() {
@@ -1785,6 +1879,7 @@ document.addEventListener('keydown', (e) => {
   if (!$('#confirm-rotate-dialog').hidden) { closeConfirmRotate(); return; }
   if (!$('#channel-dialog').hidden) { closeChannelDialog(); return; }
   if (!$('#bulletin-dialog').hidden) { closeBulletinDialog(); return; }
+  if (!$('#followed-dialog').hidden) { closeFollowedDialog(); return; }
   if (!$('#token-dialog').hidden) { closeDialog(); return; }
   if (!$('#mentions-dialog').hidden) { closeMentionsDialog(); return; }
   if (currentView !== VIEW.EMPTY) closeReader();

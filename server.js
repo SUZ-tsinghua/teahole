@@ -260,6 +260,25 @@ const Q = {
   deleteChannelPref: db.prepare(
     'DELETE FROM user_channel_prefs WHERE user_id = ? AND channel_id = ?'
   ),
+  maxCommentId: db.prepare('SELECT COALESCE(MAX(id), 0) AS max FROM comments WHERE post_id = ?'),
+  upsertFollow: db.prepare(
+    `INSERT INTO followed_posts (user_id, post_id, followed_at, last_seen_comment_id)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(user_id, post_id) DO UPDATE SET last_seen_comment_id = excluded.last_seen_comment_id`
+  ),
+  deleteFollow: db.prepare('DELETE FROM followed_posts WHERE user_id = ? AND post_id = ?'),
+  listFollowedIds: db.prepare('SELECT post_id FROM followed_posts WHERE user_id = ?'),
+  listFollowedPosts: db.prepare(
+    `SELECT fp.post_id, fp.followed_at, fp.last_seen_comment_id,
+            p.title, p.pseudonym, p.created_at, p.channel_id,
+            (SELECT COUNT(*) FROM comments c
+               WHERE c.post_id = fp.post_id AND c.id > fp.last_seen_comment_id) AS unread
+     FROM followed_posts fp
+     JOIN posts p ON p.id = fp.post_id
+     WHERE fp.user_id = ? AND p.deleted_at IS NULL
+     ORDER BY unread DESC, fp.followed_at DESC
+     LIMIT ${FEED_LIMIT}`
+  ),
 };
 
 const REACTION_KINDS = ['👍', '❤️', '😂', '😮', '😢', '🎉'];
@@ -859,6 +878,32 @@ app.delete('/api/saved/:id', requireSession, (req, res) => {
   const id = parseId(req, res); if (id == null) return;
   Q.deleteSaved.run(req.user.uid, id);
   res.json({ ok: true, saved: false });
+});
+
+// Followed threads: account-scoped reader state. POST both subscribes
+// and marks-as-read — the server just records the current max comment
+// id as the last-seen anchor, so the next GET returns unread counts
+// relative to whatever arrived afterward.
+app.get('/api/followed', requireSession, (req, res) => {
+  const ids = Q.listFollowedIds.all(req.user.uid).map((r) => r.post_id);
+  const posts = Q.listFollowedPosts.all(req.user.uid);
+  res.json({ ids, posts });
+});
+
+app.post('/api/followed/:id', requireSession, (req, res) => {
+  const id = parseId(req, res); if (id == null) return;
+  if (!Q.isPostAlive.get(id)) {
+    return res.status(Q.postExists.get(id) ? 410 : 404).json({ error: '帖子已删除或未找到' });
+  }
+  const max = Q.maxCommentId.get(id).max;
+  Q.upsertFollow.run(req.user.uid, id, Date.now(), max);
+  res.json({ ok: true, followed: true, last_seen_comment_id: max });
+});
+
+app.delete('/api/followed/:id', requireSession, (req, res) => {
+  const id = parseId(req, res); if (id == null) return;
+  Q.deleteFollow.run(req.user.uid, id);
+  res.json({ ok: true, followed: false });
 });
 
 // Per-user channel prefs: pinned + muted. Reader-side only; never

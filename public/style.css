@@ -540,10 +540,35 @@ main#app { height: calc(100vh - var(--nav-h)); overflow: hidden; position: relat
   color: var(--fg);
   border-color: var(--accent-soft);
 }
-button.ghost.small.is-saved {
+button.ghost.small.is-saved,
+button.ghost.small.is-followed {
   color: var(--accent);
   border-color: var(--accent-soft);
 }
+.follow-badge {
+  display: inline-block;
+  margin-left: 4px;
+  min-width: 16px;
+  padding: 0 5px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--bg);
+  background: var(--accent);
+  border-radius: 999px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.follow-unread {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 8px;
+  font-size: 11px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: 999px;
+  font-variant-numeric: tabular-nums;
+}
+.mention-item-card.has-unread { border-left: 3px solid var(--accent); }
 .channel-pref-btn {
   font-size: 12px;
   opacity: 0;
