@@ -119,6 +119,21 @@ CREATE TABLE IF NOT EXISTS revoked_sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_revoked_sessions_exp ON revoked_sessions(expires_at);
 
+-- Saved posts: reader-side bookmark against the account, not the token,
+-- so it survives token rotation. Keyed by (user_id, post_id); the row
+-- records WHO saved WHAT. This is a reader-side linkage only, never
+-- joined into feed/thread read endpoints, so it can't be used to infer
+-- authorship (anyone can save anyone's post).
+CREATE TABLE IF NOT EXISTS saved_posts (
+  user_id INTEGER NOT NULL,
+  post_id INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (user_id, post_id),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_saved_posts_user ON saved_posts(user_id, created_at);
+
 -- Bulletins: admin-curated notices. Authored under the admin's username,
 -- same opt-in-public model as admin posts. Intentionally separate from
 -- posts so regular-member anonymous content and admin announcements

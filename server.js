@@ -240,6 +240,15 @@ const Q = {
     'UPDATE bulletins SET title = ?, content = ?, updated_at = ? WHERE id = ?'
   ),
   deleteBulletin:   db.prepare('DELETE FROM bulletins WHERE id = ?'),
+  insertSaved:      db.prepare('INSERT OR IGNORE INTO saved_posts (user_id, post_id, created_at) VALUES (?, ?, ?)'),
+  deleteSaved:      db.prepare('DELETE FROM saved_posts WHERE user_id = ? AND post_id = ?'),
+  listSavedIds:     db.prepare('SELECT post_id FROM saved_posts WHERE user_id = ? ORDER BY created_at DESC'),
+  listSavedPosts:   db.prepare(
+    `SELECT ${postPreviewSql('p')}
+     FROM saved_posts s JOIN posts p ON p.id = s.post_id
+     WHERE s.user_id = ? AND p.deleted_at IS NULL
+     ORDER BY s.created_at DESC LIMIT ${FEED_LIMIT}`
+  ),
 };
 
 const REACTION_KINDS = ['👍', '❤️', '😂', '😮', '😢', '🎉'];
@@ -815,6 +824,30 @@ app.delete('/api/posts/:pid/comments/:id', requireSession, (req, res) => {
 // Tags list. Used for the sidebar tag chips.
 app.get('/api/tags', requireSession, (req, res) => {
   res.json(Q.listAllTags.all());
+});
+
+// Saved posts: reader-side bookmarks bound to the account, not the
+// posting token. Kept in its own endpoint so feed/thread reads never
+// pick up per-user state — callers ask explicitly for their saves.
+app.get('/api/saved', requireSession, (req, res) => {
+  const ids = Q.listSavedIds.all(req.user.uid).map((r) => r.post_id);
+  const posts = attachTags(Q.listSavedPosts.all(req.user.uid).map(mapPostPreview));
+  res.json({ ids, posts });
+});
+
+app.post('/api/saved/:id', requireSession, (req, res) => {
+  const id = parseId(req, res); if (id == null) return;
+  if (!Q.isPostAlive.get(id)) {
+    return res.status(Q.postExists.get(id) ? 410 : 404).json({ error: '帖子已删除或未找到' });
+  }
+  Q.insertSaved.run(req.user.uid, id, Date.now());
+  res.json({ ok: true, saved: true });
+});
+
+app.delete('/api/saved/:id', requireSession, (req, res) => {
+  const id = parseId(req, res); if (id == null) return;
+  Q.deleteSaved.run(req.user.uid, id);
+  res.json({ ok: true, saved: false });
 });
 
 // Channels list with live post counts. Any logged-in user can read.

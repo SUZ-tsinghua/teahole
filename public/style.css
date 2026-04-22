@@ -520,6 +520,30 @@ main#app { height: calc(100vh - var(--nav-h)); overflow: hidden; position: relat
   color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
+.quick-filter-btn {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-family: var(--sans);
+  color: var(--fg-dim);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: background 100ms ease, color 100ms ease, border-color 100ms ease;
+  text-align: left;
+}
+.quick-filter-btn:hover {
+  background: var(--surface-hover);
+  color: var(--fg);
+  border-color: var(--accent-soft);
+}
+button.ghost.small.is-saved {
+  color: var(--accent);
+  border-color: var(--accent-soft);
+}
 .bulletin-badge {
   display: inline-block;
   font-size: 11px;

@@ -149,6 +149,7 @@ let lastMentions = [];
 let channels = [];
 let bulletins = [];
 let currentBulletin = null;
+let savedIds = new Set();
 let isAdmin = false;
 let currentUsername = null;
 let adminHandles = [];
@@ -369,6 +370,7 @@ async function refreshMe() {
     $('#new-bulletin-btn').hidden = !isAdmin;
     await loadChannels();
     await loadBulletins();
+    await loadSavedIds();
     await loadFeed();
     loadTags().catch(() => {});
     showReader(VIEW.EMPTY);
@@ -473,6 +475,9 @@ function renderFilterBar() {
       const ch = channelById(filterState.value);
       text = `频道：${ch ? ch.name : '—'}`;
       sub = '动态 · 频道';
+    } else if (filterState.kind === 'saved') {
+      text = '仅显示我收藏的';
+      sub = '动态 · 收藏';
     } else {
       text = `搜索：${filterState.value}`;
       sub = '动态 · 搜索';
@@ -507,6 +512,10 @@ async function loadFeed() {
       const ch = channelById(filterState.value);
       if (!ch) { clearFilter(); return; }
       rows = await api('GET', `/api/posts?channel=${encodeURIComponent(ch.slug)}`);
+    } else if (filterState.kind === 'saved') {
+      const r = await api('GET', '/api/saved');
+      savedIds = new Set(r.ids);
+      rows = r.posts;
     } else {
       rows = await api('GET', '/api/posts');
     }
@@ -522,6 +531,8 @@ async function loadFeed() {
       ? '没有匹配的帖子。'
       : filterState.kind === 'tag'
       ? '这个标签下还没有帖子。'
+      : filterState.kind === 'saved'
+      ? '还没有收藏任何帖子。'
       : '还没有帖子。做第一个发帖的人吧。';
     feed.appendChild(el('div', { className: 'feed-empty', textContent: msg }));
     return;
@@ -620,6 +631,36 @@ function renderComposeChannels() {
     sel.appendChild(el('option', { value: String(ch.id), textContent: ch.name }));
   }
   if (prev && channels.some((c) => String(c.id) === prev)) sel.value = prev;
+}
+
+// --- Saved posts (account-scoped reader state) ---
+
+async function loadSavedIds() {
+  try {
+    const r = await api('GET', '/api/saved');
+    savedIds = new Set(r.ids);
+  } catch {
+    savedIds = new Set();
+  }
+}
+
+async function toggleSaved(postId) {
+  const wasSaved = savedIds.has(postId);
+  try {
+    await api(wasSaved ? 'DELETE' : 'POST', `/api/saved/${postId}`);
+    if (wasSaved) savedIds.delete(postId); else savedIds.add(postId);
+    renderThreadActions();
+    if (filterState.kind === 'saved') await loadFeed();
+  } catch (err) {
+    alert(err.message);
+  }
+}
+
+async function filterBySaved() {
+  filterState = { kind: 'saved', value: null };
+  $('#search-input').value = '';
+  $('#search-clear').hidden = true;
+  await loadFeed();
 }
 
 // --- Bulletins ---
@@ -725,6 +766,7 @@ function openBulletinDialog(existing) {
 function closeBulletinDialog() { $('#bulletin-dialog').hidden = true; }
 
 $('#new-bulletin-btn').addEventListener('click', () => openBulletinDialog(null));
+$('#saved-filter-btn').addEventListener('click', () => filterBySaved());
 
 $('#bulletin-form').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -927,11 +969,25 @@ function renderThreadChannel(channelId) {
 function renderThreadActions() {
   const box = $('#thread-actions');
   box.innerHTML = '';
-  if (!currentPostCanDelete) { box.hidden = true; return; }
+  const buttons = [];
+  if (currentThread != null) {
+    const save = el('button', {
+      id: 'thread-save', type: 'button', className: 'ghost small',
+    });
+    const saved = savedIds.has(currentThread);
+    save.classList.toggle('is-saved', saved);
+    save.textContent = saved ? '★ 已收藏' : '☆ 收藏';
+    save.addEventListener('click', () => toggleSaved(currentThread));
+    buttons.push(save);
+  }
+  if (currentPostCanDelete) {
+    const del = el('button', { type: 'button', className: 'ghost small danger', textContent: '删除' });
+    del.addEventListener('click', () => deletePost());
+    buttons.push(del);
+  }
+  if (!buttons.length) { box.hidden = true; return; }
   box.hidden = false;
-  const del = el('button', { type: 'button', className: 'ghost small danger', textContent: '删除' });
-  del.addEventListener('click', () => deletePost());
-  box.append(del);
+  box.append(...buttons);
 }
 
 async function deletePost() {
