@@ -894,6 +894,7 @@ button.ghost.small.is-followed {
 
 /* Sidebar foot */
 .sidebar-foot {
+  margin-top: auto;
   padding: 10px 12px 12px;
   border-top: 1px solid var(--border);
   display: flex;
