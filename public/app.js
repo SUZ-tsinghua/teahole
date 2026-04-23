@@ -3,6 +3,9 @@ const THEME_STORE_KEY = 'anonforum.theme';
 const MY_REACTIONS_KEY = 'anonforum.myReactions';
 const MENTIONS_SEEN_KEY = 'anonforum.mentionsSeen';
 const HELP_SEEN_KEY = 'anonforum.helpSeen';
+const SIDEBAR_WIDTH_KEY = 'anonforum.sidebarWidth';
+const SIDEBAR_MIN = 220;
+const SIDEBAR_MAX = 520;
 // Authoritative list lives on the server (REACTION_KIND_SET in server.js).
 // Kept in sync manually — if you change one, change the other.
 const REACTION_KINDS = ['👍', '❤️', '😂', '😮', '😢', '🎉'];
@@ -1996,5 +1999,63 @@ document.addEventListener('keydown', (e) => {
   if (!$('#mentions-dialog').hidden) { closeMentionsDialog(); return; }
   if (currentView !== VIEW.EMPTY) closeReader();
 });
+
+// --- Resizable sidebar (desktop only; mobile media query hides the bar) ---
+
+(function setupSidebarResizer() {
+  const resizer = $('#sidebar-resizer');
+  if (!resizer) return;
+  const layout = $('#forum-view');
+  const clamp = (w) => Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, w));
+  const apply = (w) => layout.style.setProperty('--sidebar-w', `${clamp(w)}px`);
+  try {
+    const saved = parseInt(localStorage.getItem(SIDEBAR_WIDTH_KEY), 10);
+    if (Number.isFinite(saved)) apply(saved);
+  } catch {}
+
+  let dragging = false;
+  const onMove = (e) => {
+    if (!dragging) return;
+    const x = e.clientX - layout.getBoundingClientRect().left;
+    apply(x);
+  };
+  const onUp = () => {
+    if (!dragging) return;
+    dragging = false;
+    resizer.classList.remove('is-dragging');
+    document.body.style.removeProperty('cursor');
+    const w = parseInt(getComputedStyle(layout).getPropertyValue('--sidebar-w'), 10);
+    if (Number.isFinite(w)) {
+      try { localStorage.setItem(SIDEBAR_WIDTH_KEY, String(w)); } catch {}
+    }
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', onUp);
+  };
+  resizer.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    dragging = true;
+    resizer.classList.add('is-dragging');
+    document.body.style.cursor = 'col-resize';
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  });
+
+  // Keyboard: ←/→ to nudge by 16px when the resizer is focused.
+  resizer.addEventListener('keydown', (e) => {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    e.preventDefault();
+    const cur = parseInt(getComputedStyle(layout).getPropertyValue('--sidebar-w'), 10) || 300;
+    const next = clamp(cur + (e.key === 'ArrowRight' ? 16 : -16));
+    apply(next);
+    try { localStorage.setItem(SIDEBAR_WIDTH_KEY, String(next)); } catch {}
+  });
+
+  // Double-click resets to default.
+  resizer.addEventListener('dblclick', () => {
+    layout.style.removeProperty('--sidebar-w');
+    try { localStorage.removeItem(SIDEBAR_WIDTH_KEY); } catch {}
+  });
+})();
 
 refreshMe();

@@ -303,9 +303,23 @@ main#app { height: calc(100vh - var(--nav-h)); overflow: hidden; position: relat
    ============================================================ */
 .layout {
   display: grid;
-  grid-template-columns: 300px 1fr;
+  grid-template-columns: var(--sidebar-w, 300px) 6px 1fr;
   height: 100%;
   overflow: hidden;
+}
+.sidebar-resizer {
+  cursor: col-resize;
+  background: transparent;
+  border-left: 1px solid var(--border);
+  border-right: 1px solid transparent;
+  transition: border-color 120ms ease, background 120ms ease;
+  user-select: none;
+  touch-action: none;
+}
+.sidebar-resizer:hover,
+.sidebar-resizer.is-dragging {
+  background: var(--accent-soft);
+  border-left-color: var(--accent);
 }
 
 /* ============================================================
@@ -1723,6 +1737,7 @@ button.ghost.small.danger:hover {
   header { padding: 0 12px; }
   .brand { font-size: 15px; }
   .layout { grid-template-columns: 1fr; }
+  .sidebar-resizer { display: none; }
   .sidebar { border-right: 0; }
   .sidebar-head { padding: 10px 12px 8px; gap: 8px; }
 
