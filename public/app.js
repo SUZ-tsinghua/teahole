@@ -1644,7 +1644,9 @@ async function refreshMentions({ silent = false, open = false } = {}) {
     lastMentions = r.mentions;
     const seen = getMentionSeen(mentionInboxKey(t));
     const unread = lastMentions.filter((m) => m.created_at > seen).length;
-    $('#mention-dot').hidden = unread === 0;
+    const dot = $('#mention-dot');
+    dot.hidden = unread === 0;
+    dot.textContent = unread > 99 ? '99+' : String(unread);
   } catch {
     if (!silent) throw new Error('无法刷新提醒');
   }

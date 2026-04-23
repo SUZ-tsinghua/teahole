@@ -968,15 +968,6 @@ button.ghost.small.is-followed {
   50%      { box-shadow: 0 0 0 5px rgba(52, 199, 89, 0.1); }
 }
 
-.mention-dot {
-  width: 8px;
-  height: 8px;
-  background: var(--danger);
-  border-radius: 50%;
-  box-shadow: 0 0 0 2px rgba(255, 59, 48, 0.22);
-  margin-left: auto;
-}
-
 .foot-links {
   display: flex;
   gap: 6px;
