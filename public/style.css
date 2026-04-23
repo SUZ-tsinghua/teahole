@@ -400,11 +400,11 @@ main#app { height: calc(100vh - var(--nav-h)); overflow: hidden; position: relat
 
 /* Filter bar */
 .filter-bar {
-  padding: 8px 14px;
+  padding: 4px 12px;
   display: flex;
   gap: 8px;
   align-items: center;
-  border-bottom: 1px solid var(--border);
+  border-radius: 999px;
   background: var(--accent-soft);
 }
 .filter-bar .filter-text {
@@ -1015,76 +1015,51 @@ button.ghost.small.is-followed {
   background: transparent;
 }
 
-.empty {
+/* Default reader pane — the post feed lives here so the wide column
+   is used to read more rows at once instead of a centered empty state. */
+.feed-pane {
   height: 100%;
   display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 40px;
+  flex-direction: column;
+  min-height: 0;
 }
-.empty-inner {
-  text-align: center;
-  max-width: 420px;
-}
-
-/* macOS-style colorful app icon for empty state */
-.empty-mark {
-  width: 76px;
-  height: 76px;
-  margin: 0 auto 24px;
-  border-radius: 22px;
-  position: relative;
-  background:
-    linear-gradient(135deg,
-      #ff3b8f 0%,
-      #ff9500 18%,
-      #ffcc00 36%,
-      #34c759 54%,
-      #5ac8fa 72%,
-      #007aff 86%,
-      #af52de 100%);
-  background-size: 180% 180%;
-  box-shadow:
-    0 10px 30px rgba(0, 122, 255, 0.28),
-    0 2px 6px rgba(0, 0, 0, 0.08),
-    inset 0 1px 1px rgba(255, 255, 255, 0.45),
-    inset 0 -1px 2px rgba(0, 0, 0, 0.12);
-  animation: shimmer 9s ease-in-out infinite;
+.feed-pane-head {
+  padding: 14px 24px 10px;
   display: flex;
   align-items: center;
-  justify-content: center;
-  overflow: hidden;
+  gap: 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--glass);
+  backdrop-filter: saturate(180%) blur(30px);
+  -webkit-backdrop-filter: saturate(180%) blur(30px);
 }
-.empty-mark::before {
-  content: "";
-  position: absolute;
-  inset: 4px;
-  border-radius: 18px;
-  background: var(--glass-strong);
-  backdrop-filter: blur(16px) saturate(140%);
-  -webkit-backdrop-filter: blur(16px) saturate(140%);
-}
-.empty-mark::after {
-  content: "⌘";
-  position: relative;
-  font-size: 34px;
-  font-weight: 500;
-  color: var(--accent);
-  line-height: 1;
-}
-@keyframes shimmer {
-  0%, 100% { background-position: 0% 50%; }
-  50%      { background-position: 100% 50%; }
-}
-
-.empty h2 {
-  font-size: 18px;
+.feed-pane-head h2 {
+  margin: 0;
+  font-size: 15px;
   font-weight: 600;
-  margin: 0 0 8px;
-  color: var(--fg);
   letter-spacing: -0.01em;
 }
-.empty .muted { font-size: 13.5px; line-height: 1.55; }
+.feed-pane-head .filter-bar { margin: 0; flex: 1; }
+.feed-pane #feed {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px 20px 24px;
+}
+/* Two-column grid on wide panes; collapses to one column when narrow. */
+.feed-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 8px;
+  align-content: start;
+}
+.feed-grid .post {
+  margin: 0;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+.feed-grid .post:hover { background: var(--surface-hover); border-color: var(--accent-soft); }
+.feed-grid .post.active { background: var(--accent-soft); border-color: var(--accent); }
 
 /* Reader card — main glass panel */
 .reader-card {

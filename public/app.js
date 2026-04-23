@@ -203,10 +203,17 @@ function channelById(id) {
 }
 
 function showReader(which) {
-  if (currentView === which) return;
-  for (const id of Object.values(VIEW)) viewNodes[id].hidden = id !== which;
-  currentView = which;
-  if (window.innerWidth <= 760) readerNode.classList.toggle('open', which !== VIEW.EMPTY);
+  if (currentView !== which) {
+    for (const id of Object.values(VIEW)) viewNodes[id].hidden = id !== which;
+    currentView = which;
+  }
+  if (window.innerWidth <= 760) {
+    // Reader holds the feed too, so on mobile keep it closed only when
+    // showing the unfiltered default feed — the sidebar nav is the
+    // landing surface in that state.
+    const isDefaultFeed = which === VIEW.EMPTY && filterState.kind == null;
+    readerNode.classList.toggle('open', !isDefaultFeed);
+  }
 }
 
 function closeReader() {
@@ -590,6 +597,7 @@ async function filterByTag(tag) {
   $('#search-input').value = '';
   $('#search-clear').hidden = true;
   await loadFeed();
+  showReader(VIEW.EMPTY);
 }
 
 async function filterByChannel(channelId) {
@@ -598,6 +606,7 @@ async function filterByChannel(channelId) {
   $('#search-clear').hidden = true;
   markChannelSeen(channelId).catch(() => {});
   await loadFeed();
+  showReader(VIEW.EMPTY);
 }
 
 async function loadChannels() {
@@ -870,6 +879,7 @@ async function filterBySaved() {
   $('#search-input').value = '';
   $('#search-clear').hidden = true;
   await loadFeed();
+  showReader(VIEW.EMPTY);
 }
 
 // --- Bulletins ---
@@ -1109,6 +1119,7 @@ $('#search-form').addEventListener('submit', async (e) => {
   filterState = { kind: 'search', value: q };
   $('#search-clear').hidden = false;
   await loadFeed();
+  showReader(VIEW.EMPTY);
 });
 $('#search-input').addEventListener('input', () => {
   $('#search-clear').hidden = !$('#search-input').value;

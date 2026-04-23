@@ -60,7 +60,6 @@
           <span>★ 我的收藏</span>
         </button>
       </div>
-      <div id="filter-bar" class="filter-bar" hidden></div>
       <div class="sidebar-section-head">
         <div class="sidebar-section-label">公告</div>
         <button id="new-bulletin-btn" type="button" class="icon-btn subtle" hidden aria-label="新建公告" title="新建公告">＋</button>
@@ -73,8 +72,6 @@
       <div id="channel-list" class="channel-list"></div>
       <div class="sidebar-section-label">标签</div>
       <div id="tag-cloud" class="tag-cloud"></div>
-      <div class="sidebar-section-label" id="feed-label">动态</div>
-      <div id="feed" class="feed"></div>
       <div class="sidebar-foot">
         <button id="token-toggle" class="token-chip" type="button">
           <span class="dot"></span>
@@ -97,12 +94,12 @@
     <div id="sidebar-resizer" class="sidebar-resizer" role="separator" aria-orientation="vertical" aria-label="拖动调整侧边栏宽度" tabindex="0"></div>
 
     <section class="reader" id="reader">
-      <div id="empty-view" class="empty">
-        <div class="empty-inner">
-          <div class="empty-mark"></div>
-          <h2>选一个帖子开始阅读</h2>
-          <p class="muted">或点击「发新帖」分享想法。每枚令牌对应一个发言身份；管理员会直接显示用户名。</p>
+      <div id="empty-view" class="feed-pane">
+        <div class="feed-pane-head">
+          <h2 id="feed-label">动态</h2>
+          <div id="filter-bar" class="filter-bar" hidden></div>
         </div>
+        <div id="feed" class="feed feed-grid"></div>
       </div>
 
       <article id="thread-view" class="reader-card" hidden>
