@@ -67,9 +67,10 @@ CREATE TABLE IF NOT EXISTS reactions (
 );
 CREATE INDEX IF NOT EXISTS idx_reactions_post ON reactions(post_id);
 
--- Same privacy shape as tags: attached to the post, not the author.
--- ON DELETE SET NULL on posts.channel_id (in the ALTER below) keeps
--- posts alive when a channel is removed — content is not admin-churnable.
+-- Channels are attached to the post, not the author, so they leak no
+-- "who wrote what" info. ON DELETE SET NULL on posts.channel_id (in
+-- the ALTER below) keeps posts alive when a channel is removed —
+-- content is not admin-churnable.
 CREATE TABLE IF NOT EXISTS channels (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   slug TEXT UNIQUE NOT NULL,
@@ -77,16 +78,6 @@ CREATE TABLE IF NOT EXISTS channels (
   description TEXT,
   created_at INTEGER NOT NULL
 );
-
--- Tags: normalized lowercase, attached to a post. Stored per-post (not
--- per-user), so tagging leaks no "who tags what" info.
-CREATE TABLE IF NOT EXISTS post_tags (
-  post_id INTEGER NOT NULL,
-  tag TEXT NOT NULL,
-  PRIMARY KEY (post_id, tag),
-  FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE
-);
-CREATE INDEX IF NOT EXISTS idx_post_tags_tag ON post_tags(tag);
 
 -- Mentions inbox: keyed by target handle, which is either a token-scoped
 -- 8-char pseudonym or a public admin username. rotate() ages rows out
@@ -186,6 +177,12 @@ CREATE TRIGGER IF NOT EXISTS posts_au AFTER UPDATE ON posts BEGIN
   INSERT INTO posts_fts(rowid, title, content) VALUES (new.id, new.title, new.content);
 END;
 `);
+
+// One-shot drop for the removed tag feature: any pre-existing DB still
+// has post_tags around. Drop it (and its index) here so stale rows
+// don't keep referencing posts.
+db.exec('DROP INDEX IF EXISTS idx_post_tags_tag');
+db.exec('DROP TABLE IF EXISTS post_tags');
 
 // Column-level migrations for pre-existing databases. CREATE TABLE above
 // is a no-op when the table already exists, so new columns have to come

@@ -144,7 +144,6 @@ let currentView = null;
 let currentThread = null;
 let currentComments = [];
 let currentPostPseudonym = null;
-let currentPostTags = [];
 let currentPostCanDelete = false;
 let feedPosts = [];
 let filterState = { kind: null, value: null };
@@ -402,7 +401,6 @@ async function refreshMe() {
     await loadChannelUnread();
     await loadFollowed();
     await loadFeed();
-    loadTags().catch(() => {});
     showReader(VIEW.EMPTY);
     const route = routeFromPath();
     if (route && route.kind === 'post') await openThread(route.id, { pushUrl: false });
@@ -502,10 +500,7 @@ function renderFilterBar() {
   } else {
     bar.hidden = false;
     let text, sub;
-    if (filterState.kind === 'tag') {
-      text = `筛选标签：#${filterState.value}`;
-      sub = '动态 · 标签';
-    } else if (filterState.kind === 'channel') {
+    if (filterState.kind === 'channel') {
       const ch = channelById(filterState.value);
       text = `频道：${ch ? ch.name : '—'}`;
       sub = '动态 · 频道';
@@ -538,9 +533,7 @@ async function loadFeed() {
   feed.innerHTML = '';
   let rows;
   try {
-    if (filterState.kind === 'tag') {
-      rows = await api('GET', `/api/posts?tag=${encodeURIComponent(filterState.value)}`);
-    } else if (filterState.kind === 'search') {
+    if (filterState.kind === 'search') {
       rows = await api('GET', `/api/search?q=${encodeURIComponent(filterState.value)}`);
     } else if (filterState.kind === 'channel') {
       const ch = channelById(filterState.value);
@@ -563,8 +556,6 @@ async function loadFeed() {
   if (!rows.length) {
     const msg = filterState.kind === 'search'
       ? '没有匹配的帖子。'
-      : filterState.kind === 'tag'
-      ? '这个标签下还没有帖子。'
       : filterState.kind === 'saved'
       ? '还没有收藏任何帖子。'
       : '还没有帖子。做第一个发帖的人吧。';
@@ -573,31 +564,6 @@ async function loadFeed() {
   }
   for (const p of rows) feed.appendChild(renderPostCard(p));
   if (currentThread != null) markActivePost(currentThread);
-}
-
-async function loadTags() {
-  const cloud = $('#tag-cloud');
-  cloud.innerHTML = '';
-  let tags;
-  try { tags = await api('GET', '/api/tags'); } catch { return; }
-  if (!tags.length) return;
-  for (const t of tags.slice(0, 12)) {
-    const chip = el('button', { type: 'button', className: 'tag-chip', title: `${t.n} 篇` });
-    chip.append(
-      el('span', { textContent: `#${t.tag}` }),
-      el('span', { className: 'tag-chip-count', textContent: String(t.n) }),
-    );
-    chip.addEventListener('click', () => filterByTag(t.tag));
-    cloud.appendChild(chip);
-  }
-}
-
-async function filterByTag(tag) {
-  filterState = { kind: 'tag', value: tag };
-  $('#search-input').value = '';
-  $('#search-clear').hidden = true;
-  await loadFeed();
-  showReader(VIEW.EMPTY);
 }
 
 async function filterByChannel(channelId) {
@@ -1075,15 +1041,6 @@ function renderPostCard(p) {
     el('div', { className: 'post-preview', textContent: preview }),
     metaLine(p.pseudonym, p.created_at, p.edited_at),
   );
-  if (p.tags && p.tags.length) {
-    const tagRow = el('div', { className: 'card-tags' });
-    for (const tag of p.tags) {
-      const chip = el('button', { type: 'button', className: 'tag-pill', textContent: `#${tag}` });
-      chip.addEventListener('click', (e) => { e.stopPropagation(); filterByTag(tag); });
-      tagRow.appendChild(chip);
-    }
-    children.push(tagRow);
-  }
   const node = el('div', { className: 'post' }, children);
   node.dataset.postId = p.id;
   node.addEventListener('click', () => openThread(p.id));
@@ -1149,23 +1106,17 @@ function openCompose() {
   f.title.focus();
 }
 
-function parseTagsInput(raw) {
-  if (!raw) return [];
-  return [...new Set(raw.trim().toLowerCase().split(/\s+/).filter(Boolean))];
-}
-
 $('#post-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   $('#post-err').textContent = '';
   const t = getToken();
   if (!t) { $('#post-err').textContent = '请先获取发帖令牌。'; openDialog(); return; }
   const f = e.target;
-  const tags = parseTagsInput(f.tags.value);
   const rawCh = f.channel_id && f.channel_id.value;
   const channel_id = rawCh ? parseInt(rawCh, 10) : null;
   try {
     const created = await api('POST', '/api/posts', {
-      token: t.token, title: f.title.value, content: f.content.value, tags, channel_id,
+      token: t.token, title: f.title.value, content: f.content.value, channel_id,
     });
     f.reset();
     const feed = $('#feed');
@@ -1173,7 +1124,6 @@ $('#post-form').addEventListener('submit', async (e) => {
     if (emptyMsg) emptyMsg.remove();
     feedPosts.unshift(created);
     feed.prepend(renderPostCard(created));
-    loadTags().catch(() => {});
     const ch = channelById(created.channel_id);
     if (ch) { ch.post_count = (ch.post_count || 0) + 1; renderChannelList(); }
     await openThread(created.id);
@@ -1205,18 +1155,6 @@ function jumpToPseudonym(p) {
   const comment = $(`.comment[data-pseudonym="${p}"]`);
   if (comment) { flashTarget(comment); return; }
   if (p === currentPostPseudonym) flashTarget($('#thread-meta'));
-}
-
-function renderThreadTags() {
-  const box = $('#thread-tags');
-  box.innerHTML = '';
-  if (!currentPostTags.length) { box.hidden = true; return; }
-  box.hidden = false;
-  for (const tag of currentPostTags) {
-    const chip = el('button', { type: 'button', className: 'tag-pill', textContent: `#${tag}` });
-    chip.addEventListener('click', () => filterByTag(tag));
-    box.appendChild(chip);
-  }
 }
 
 function renderThreadChannel(channelId) {
@@ -1279,7 +1217,6 @@ async function deletePost() {
     feedPosts = feedPosts.filter((p) => p.id !== gone);
     const card = $(`.post[data-post-id="${gone}"]`);
     if (card) card.remove();
-    loadTags().catch(() => {});
     // Reload the thread so the tombstone view renders with comments intact.
     await openThread(gone, { pushUrl: false });
   } catch (err) {
@@ -1300,11 +1237,10 @@ async function openThread(id, { pushUrl = true } = {}) {
     renderMissingThread(id, err.message);
     return;
   }
-  const { post, comments, reactions, tags } = data;
+  const { post, comments, reactions } = data;
   const deleted = !!post.deleted_at;
   currentComments = comments.slice();
   currentPostPseudonym = deleted ? null : post.pseudonym;
-  currentPostTags = deleted ? [] : (tags || []);
   currentPostCanDelete = !deleted && canDeleteAuthor(post.author_key);
 
   $('#thread-title').innerHTML = '';
@@ -1332,7 +1268,6 @@ async function openThread(id, { pushUrl = true } = {}) {
     $('#thread-body').appendChild(renderMarkdown(post.content));
   }
   renderThreadChannel(deleted ? null : post.channel_id);
-  renderThreadTags();
   renderThreadActions();
   if (deleted) {
     $('#reactions').innerHTML = '';
@@ -1359,13 +1294,10 @@ async function openThread(id, { pushUrl = true } = {}) {
 function renderMissingThread(id, message) {
   currentComments = [];
   currentPostPseudonym = null;
-  currentPostTags = [];
   currentPostCanDelete = false;
   $('#reactions').innerHTML = '';
   $('#reactions').hidden = false;
   $('#comment-form').hidden = false;
-  $('#thread-tags').innerHTML = '';
-  $('#thread-tags').hidden = true;
   $('#thread-channel').innerHTML = '';
   $('#thread-channel').hidden = true;
   $('#thread-actions').innerHTML = '';

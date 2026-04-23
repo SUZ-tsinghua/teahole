@@ -21,7 +21,6 @@ const SEARCH_LIMIT = 50;
 const SEARCH_MIN_CHARS = 3;
 const MENTIONS_LIMIT = 50;
 const RSS_LIMIT = 50;
-const MAX_TAGS_PER_POST = 5;
 const MAX_UPLOAD_BYTES = 4 * 1024 * 1024;
 const UPLOAD_DIR = path.join(__dirname, 'uploads');
 const UPLOAD_EXT_FOR_MIME = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' };
@@ -31,7 +30,6 @@ const uploadMiddleware = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: MAX_UPLOAD_BYTES, files: 1 },
 });
-const TAG_RE = /^[a-z0-9_-]{1,24}$/;
 const CHANNEL_SLUG_RE = /^[a-z0-9_-]{1,32}$/;
 const CHANNEL_NAME_MAX = 60;
 const CHANNEL_DESC_MAX = 200;
@@ -147,12 +145,6 @@ const Q = {
      FROM posts WHERE deleted_at IS NULL
      ORDER BY created_at DESC LIMIT ${FEED_LIMIT}`
   ),
-  listPostsByTag:  db.prepare(
-    `SELECT ${postPreviewSql('p')}
-     FROM posts p JOIN post_tags pt ON pt.post_id = p.id
-     WHERE pt.tag = ? AND p.deleted_at IS NULL
-     ORDER BY p.created_at DESC LIMIT ${FEED_LIMIT}`
-  ),
   listPostsByChannel: db.prepare(
     `SELECT ${postPreviewSql()}
      FROM posts WHERE channel_id = ? AND deleted_at IS NULL
@@ -205,12 +197,6 @@ const Q = {
   insertReaction:  db.prepare('INSERT INTO reactions (post_id, token_hash, kind, created_at) VALUES (?, ?, ?, ?)'),
   deleteReaction:  db.prepare('DELETE FROM reactions WHERE post_id = ? AND token_hash = ? AND kind = ?'),
   countReactions:  db.prepare('SELECT kind, COUNT(*) AS n FROM reactions WHERE post_id = ? GROUP BY kind'),
-  insertPostTag:   db.prepare('INSERT OR IGNORE INTO post_tags (post_id, tag) VALUES (?, ?)'),
-  clearPostTags:   db.prepare('DELETE FROM post_tags WHERE post_id = ?'),
-  listPostTags:    db.prepare('SELECT tag FROM post_tags WHERE post_id = ? ORDER BY tag ASC'),
-  listAllTags:     db.prepare(
-    'SELECT tag, COUNT(*) AS n FROM post_tags GROUP BY tag ORDER BY n DESC, tag ASC'
-  ),
   insertMention:   db.prepare('INSERT INTO mentions (target_pseudonym, post_id, comment_id, created_at) VALUES (?, ?, ?, ?)'),
   listMentions:    db.prepare(
     `SELECT m.id, m.post_id, m.comment_id, m.created_at,
@@ -340,10 +326,6 @@ function reactionCountsFor(postId) {
   return out;
 }
 
-function tagsFor(postId) {
-  return Q.listPostTags.all(postId).map((r) => r.tag);
-}
-
 function mapPostPreview(r) {
   return {
     id: r.id,
@@ -356,21 +338,6 @@ function mapPostPreview(r) {
     edited_at: r.edited_at,
     channel_id: r.channel_id,
   };
-}
-
-// Attach tags to a batch of post rows without N+1. Builds one query per
-// call; fine for FEED_LIMIT-sized lists.
-function attachTags(rows) {
-  if (!rows.length) return rows;
-  const ids = rows.map((r) => r.id);
-  const placeholders = ids.map(() => '?').join(',');
-  const stmt = db.prepare(
-    `SELECT post_id, tag FROM post_tags WHERE post_id IN (${placeholders}) ORDER BY tag ASC`
-  );
-  const byId = new Map(ids.map((id) => [id, []]));
-  for (const { post_id, tag } of stmt.all(...ids)) byId.get(post_id).push(tag);
-  for (const r of rows) r.tags = byId.get(r.id) || [];
-  return rows;
 }
 
 const toggleReactionTx = db.transaction((postId, tokenHash, kind) => {
@@ -404,13 +371,6 @@ function quotaFor(userId) {
     unlimited: false,
   };
 }
-
-// Sets tags for a post atomically: replace, then re-insert. Also used by
-// create + update flows.
-const setPostTagsTx = db.transaction((postId, tags) => {
-  Q.clearPostTags.run(postId);
-  for (const tag of tags) Q.insertPostTag.run(postId, tag);
-});
 
 // Parse @pseudonym mentions out of text and record them against the
 // target pseudonym. Idempotent: callers pre-clear before calling on an
@@ -501,28 +461,6 @@ function sanitizeText(s, max) {
   const trimmed = s.trim();
   if (!trimmed || trimmed.length > max) return null;
   return trimmed;
-}
-
-// Tags: accept an optional array of strings. Lowercase, dedupe, cap at
-// MAX_TAGS_PER_POST. Returns the cleaned array, or null on a bad shape.
-function sanitizeTags(input) {
-  if (input == null) return [];
-  if (!Array.isArray(input)) return null;
-  const seen = new Set();
-  for (const raw of input) {
-    if (typeof raw !== 'string') return null;
-    const t = raw.trim().toLowerCase();
-    if (!TAG_RE.test(t)) return null;
-    seen.add(t);
-    if (seen.size > MAX_TAGS_PER_POST) return null;
-  }
-  return [...seen];
-}
-
-function sanitizeTagParam(raw) {
-  if (typeof raw !== 'string') return null;
-  const t = raw.trim().toLowerCase();
-  return TAG_RE.test(t) ? t : null;
 }
 
 function sanitizeChannelSlug(raw) {
@@ -680,17 +618,11 @@ app.post('/api/token', requireSession, (req, res) => {
   });
 });
 
-// Feed. Supports optional ?tag=xyz or ?channel=<slug> filter (mutually
-// exclusive — the client only sets one at a time). Tags are attached in batch.
+// Feed. Supports optional ?channel=<slug> filter.
 app.get('/api/posts', requireSession, (req, res) => {
   let rows;
-  const tagParam = req.query.tag;
   const chParam = req.query.channel;
-  if (tagParam != null) {
-    const tag = sanitizeTagParam(tagParam);
-    if (!tag) return res.status(400).json({ error: '无效的标签' });
-    rows = Q.listPostsByTag.all(tag);
-  } else if (chParam != null) {
+  if (chParam != null) {
     const slug = sanitizeChannelSlug(chParam);
     if (!slug) return res.status(400).json({ error: '无效的频道' });
     const ch = Q.getChannelBySlug.get(slug);
@@ -699,27 +631,22 @@ app.get('/api/posts', requireSession, (req, res) => {
   } else {
     rows = Q.listPosts.all();
   }
-  rows = rows.map(mapPostPreview);
-  attachTags(rows);
-  res.json(rows);
+  res.json(rows.map(mapPostPreview));
 });
 
 app.post('/api/posts', requireSession, (req, res) => {
-  const { token, title, content, tags, channel_id } = req.body || {};
+  const { token, title, content, channel_id } = req.body || {};
   const resolved = resolveToken(token);
   if (!resolved) return res.status(401).json({ error: '发帖令牌无效或已过期' });
   const publicHandle = publicHandleFor(req.user, resolved.authorKey);
   const t = sanitizeText(title, 200);
   const c = sanitizeText(content, 10000);
   if (!t || !c) return res.status(400).json({ error: '标题和内容不能为空' });
-  const cleanTags = sanitizeTags(tags);
-  if (cleanTags === null) return res.status(400).json({ error: '标签格式错误（最多 5 个，每个 1–24 位 a-z / 0-9 / - / _）' });
   const ch = resolveChannelInput(channel_id);
   if (!ch.ok) return res.status(400).json({ error: ch.error });
 
   const createdAt = Date.now();
   const info = Q.insertPost.run(publicHandle, t, c, createdAt, resolved.tokenHash, ch.channelId);
-  if (cleanTags.length) setPostTagsTx(info.lastInsertRowid, cleanTags);
   recordMentionsForPost(info.lastInsertRowid, c, createdAt);
 
   res.json({
@@ -731,7 +658,6 @@ app.post('/api/posts', requireSession, (req, res) => {
     truncated: false,
     created_at: createdAt,
     edited_at: null,
-    tags: cleanTags,
     channel_id: ch.channelId,
   });
 });
@@ -741,13 +667,11 @@ app.get('/api/posts/:id', requireSession, (req, res) => {
   const post = Q.getPost.get(id);
   if (!post) return res.status(404).json({ error: '未找到' });
   const comments = Q.listComments.all(id);
-  // Strip token_hash from the outgoing shape — it's never sent to the client.
   const { token_hash, ...safePost } = post;
   res.json({
     post: safePost,
     comments,
     reactions: reactionCountsFor(id),
-    tags: tagsFor(id),
   });
 });
 
@@ -829,10 +753,9 @@ app.put('/api/posts/:pid/comments/:id', requireSession, (req, res) => {
 
 // Author OR admin can delete. Author uses token; admin uses their session.
 // Soft-delete: tombstones the post (blanks title/content, sets deleted_at)
-// while leaving the row so child comments aren't cascade-deleted. Tags,
-// post-level mentions, and reaction rows are cleared.
+// while leaving the row so child comments aren't cascade-deleted.
+// Post-level mentions and reaction rows are cleared.
 function tombstonePost(id) {
-  Q.clearPostTags.run(id);
   clearMentionsForPost.run(id);
   Q.clearReactionsForPost.run(id);
 }
@@ -921,17 +844,12 @@ app.get('/api/uploads/:name', requireSession, (req, res) => {
   res.sendFile(fp);
 });
 
-// Tags list. Used for the sidebar tag chips.
-app.get('/api/tags', requireSession, (req, res) => {
-  res.json(Q.listAllTags.all());
-});
-
 // Saved posts: reader-side bookmarks bound to the account, not the
 // posting token. Kept in its own endpoint so feed/thread reads never
 // pick up per-user state — callers ask explicitly for their saves.
 app.get('/api/saved', requireSession, (req, res) => {
   const ids = Q.listSavedIds.all(req.user.uid).map((r) => r.post_id);
-  const posts = attachTags(Q.listSavedPosts.all(req.user.uid).map(mapPostPreview));
+  const posts = Q.listSavedPosts.all(req.user.uid).map(mapPostPreview);
   res.json({ ids, posts });
 });
 
@@ -1105,9 +1023,7 @@ app.get('/api/search', requireSession, (req, res) => {
       error: `搜索词需为 ${SEARCH_MIN_CHARS} 位及以上`,
     });
   }
-  const rows = Q.searchPosts.all(q).map(mapPostPreview);
-  attachTags(rows);
-  res.json(rows);
+  res.json(Q.searchPosts.all(q).map(mapPostPreview));
 });
 
 // @mention inbox for either the current token's pseudonym or, for admins,

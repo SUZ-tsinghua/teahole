@@ -415,41 +415,6 @@ main#app { height: calc(100vh - var(--nav-h)); overflow: hidden; position: relat
 }
 .filter-bar .link-btn { padding: 2px 8px; }
 
-/* Tags */
-.tag-cloud {
-  padding: 8px 14px;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-  border-bottom: 1px solid var(--border);
-  max-height: 120px;
-  overflow: auto;
-}
-.tag-chip, .tag-pill {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  color: var(--fg-dim);
-  font-size: 11.5px;
-  padding: 2px 9px;
-  border-radius: 999px;
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  transition: all 120ms ease;
-  font-weight: 500;
-}
-.tag-chip:hover, .tag-pill:hover {
-  background: var(--cyan-soft);
-  color: var(--cyan);
-  border-color: transparent;
-}
-.tag-chip-count {
-  font-size: 10px;
-  color: var(--muted);
-  font-weight: 500;
-}
-
 .sidebar-section-label {
   font-size: 10.5px;
   text-transform: uppercase;
@@ -865,14 +830,6 @@ button.ghost.small.is-followed {
   margin-bottom: 6px;
 }
 
-.card-tags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  margin-bottom: 6px;
-}
-.card-tags .tag-pill { font-size: 10.5px; padding: 1px 7px; }
-
 .meta {
   font-size: 11.5px;
   color: var(--muted);
@@ -1111,12 +1068,6 @@ button.ghost.small.is-followed {
 
 #thread-meta { margin-bottom: 14px; }
 
-.thread-tags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-bottom: 18px;
-}
 
 .prose {
   color: var(--fg);
@@ -1719,8 +1670,6 @@ button.ghost.small.danger:hover {
   /* Wide-tappable controls: 40px is the Apple HIG minimum target. */
   .channel-pill,
   .bulletin-pill,
-  .tag-chip,
-  .tag-pill,
   .foot-link,
   .icon-btn,
   .reaction-pill {
