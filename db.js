@@ -176,6 +176,22 @@ CREATE TRIGGER IF NOT EXISTS posts_au AFTER UPDATE ON posts BEGIN
   INSERT INTO posts_fts(posts_fts, rowid, title, content) VALUES ('delete', old.id, old.title, old.content);
   INSERT INTO posts_fts(rowid, title, content) VALUES (new.id, new.title, new.content);
 END;
+
+-- Comment FTS so search matches a thread when the hit is in a reply,
+-- not just the OP. Same trigram tokenizer for CJK parity with posts_fts.
+CREATE VIRTUAL TABLE IF NOT EXISTS comments_fts USING fts5(
+  content, content='comments', content_rowid='id', tokenize='trigram'
+);
+CREATE TRIGGER IF NOT EXISTS comments_ai AFTER INSERT ON comments BEGIN
+  INSERT INTO comments_fts(rowid, content) VALUES (new.id, new.content);
+END;
+CREATE TRIGGER IF NOT EXISTS comments_ad AFTER DELETE ON comments BEGIN
+  INSERT INTO comments_fts(comments_fts, rowid, content) VALUES ('delete', old.id, old.content);
+END;
+CREATE TRIGGER IF NOT EXISTS comments_au AFTER UPDATE ON comments BEGIN
+  INSERT INTO comments_fts(comments_fts, rowid, content) VALUES ('delete', old.id, old.content);
+  INSERT INTO comments_fts(rowid, content) VALUES (new.id, new.content);
+END;
 `);
 
 // One-shot drop for the removed tag feature: any pre-existing DB still
@@ -234,11 +250,18 @@ if (channelCount === 0) {
   ).run('general', '一般讨论', '默认频道', Date.now());
 }
 
-// Backfill FTS for pre-existing posts (fresh DB has nothing to do).
+// Backfill FTS for pre-existing posts/comments. For contentless FTS5 tables
+// `count(*)` returns the underlying-table row count, so we can't use that
+// to detect "index empty"; track schema version via user_version instead.
 const ftsCount = db.prepare('SELECT count(*) AS n FROM posts_fts').get().n;
 const postCount = db.prepare('SELECT count(*) AS n FROM posts').get().n;
 if (ftsCount === 0 && postCount > 0) {
   db.exec("INSERT INTO posts_fts(posts_fts) VALUES('rebuild')");
+}
+const userVersion = db.pragma('user_version', { simple: true });
+if (userVersion < 2) {
+  db.exec("INSERT INTO comments_fts(comments_fts) VALUES('rebuild')");
+  db.pragma('user_version = 2');
 }
 
 // Case-insensitive username uniqueness. Prevents `Alice` and `alice` from

@@ -156,6 +156,7 @@ let savedIds = new Set();
 // Per-user channel prefs: Map<channelId, { pinned, muted }>
 let channelPrefs = new Map();
 let mutedExpanded = false;
+let channelSearchQ = '';
 let followedIds = new Set();
 let followedUnreadTotal = 0;
 // channelId -> unread post count since last visit.
@@ -352,6 +353,10 @@ function openChannelDialog() {
 }
 function closeChannelDialog() { $('#channel-dialog').hidden = true; }
 $('#new-channel-btn').addEventListener('click', openChannelDialog);
+$('#channel-search').addEventListener('input', (e) => {
+  channelSearchQ = e.target.value;
+  renderChannelList();
+});
 $('#channel-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const f = e.target;
@@ -633,7 +638,7 @@ function makeChannelPillButton(ch, activeId, opts = {}) {
   if (unread > 0 && !pref.muted) btn.classList.add('has-unread');
   btn.title = ch.description || ch.name;
   btn.append(
-    el('span', { className: 'channel-hash', textContent: pref.pinned ? '📌' : '#' }),
+    el('span', { className: 'channel-hash', textContent: pref.pinned ? '📌' : '§' }),
     el('span', { className: 'channel-name', textContent: ch.name }),
   );
   if (unread > 0 && !pref.muted) {
@@ -695,14 +700,21 @@ function renderChannelList() {
     box.appendChild(el('div', { className: 'muted channel-empty', textContent: '暂无频道' }));
     return;
   }
+  const q = channelSearchQ.trim().toLowerCase();
+  const matches = (ch) => !q || ch.name.toLowerCase().includes(q) || ch.slug.toLowerCase().includes(q);
   const activeId = filterState.kind === 'channel' ? filterState.value : null;
   const opts = { adminCanDelete: isAdmin };
   const pinned = [], normal = [], muted = [];
   for (const ch of channels) {
+    if (!matches(ch)) continue;
     const pref = channelPrefFor(ch.id);
     if (pref.pinned) pinned.push(ch);
     else if (pref.muted) muted.push(ch);
     else normal.push(ch);
+  }
+  if (q && !pinned.length && !normal.length && !muted.length) {
+    box.appendChild(el('div', { className: 'muted channel-empty', textContent: '没有匹配的频道' }));
+    return;
   }
   for (const ch of pinned) box.appendChild(makeChannelPillButton(ch, activeId, opts));
   for (const ch of normal) box.appendChild(makeChannelPillButton(ch, activeId, opts));
@@ -1023,10 +1035,14 @@ $('#bulletin-form').addEventListener('submit', async (e) => {
 });
 
 function renderPostCard(p) {
-  const titleRow = el('div', { className: 'post-title-row' }, [
+  const titleChildren = [
     el('span', { className: 'id-badge', textContent: `#${p.id}` }),
     el('span', { className: 'post-title', textContent: p.title }),
-  ]);
+  ];
+  if (p.hit_in_comment && !p.hit_in_post) {
+    titleChildren.push(el('span', { className: 'hit-badge', title: '匹配在评论里', textContent: '评论命中' }));
+  }
+  const titleRow = el('div', { className: 'post-title-row' }, titleChildren);
   const preview = p.truncated ? p.content + '…' : p.content;
   const children = [titleRow];
   const ch = channelById(p.channel_id);

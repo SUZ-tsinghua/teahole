@@ -209,12 +209,26 @@ const Q = {
      WHERE m.target_pseudonym = ? AND m.created_at > ? AND p.deleted_at IS NULL
      ORDER BY m.created_at DESC LIMIT ${MENTIONS_LIMIT}`
   ),
-  searchPosts:     db.prepare(
-    `SELECT ${postPreviewSql('p')},
-            bm25(posts_fts) AS rank
+  // Union of posts whose title/content matches and posts that have a
+  // comment matching. Each row carries both an in_post and in_comment
+  // flag so the client can mark the hit. ranked by best-of (lower bm25 = better);
+  // in-post hits are weighted slightly stronger so they outrank
+  // identical-score in-comment hits.
+  // Two separate FTS prepared statements; the union is built in JS.
+  // bm25() must be called in the same SELECT that has the MATCH clause —
+  // wrapping in a CTE with an aggregate breaks the rank context.
+  searchPostsByPost: db.prepare(
+    `SELECT p.id, bm25(posts_fts) * 0.9 AS rank
      FROM posts_fts JOIN posts p ON p.id = posts_fts.rowid
      WHERE posts_fts MATCH ? AND p.deleted_at IS NULL
-     ORDER BY rank LIMIT ${SEARCH_LIMIT}`
+     ORDER BY rank LIMIT ${SEARCH_LIMIT * 2}`
+  ),
+  searchPostsByComment: db.prepare(
+    `SELECT c.post_id AS id, bm25(comments_fts) AS rank
+     FROM comments_fts JOIN comments c ON c.id = comments_fts.rowid
+     JOIN posts p ON p.id = c.post_id
+     WHERE comments_fts MATCH ? AND p.deleted_at IS NULL
+     ORDER BY rank LIMIT ${SEARCH_LIMIT * 2}`
   ),
   listChannels:    db.prepare(
     `SELECT c.id, c.slug, c.name, c.description, c.created_at,
@@ -1023,7 +1037,35 @@ app.get('/api/search', requireSession, (req, res) => {
       error: `搜索词需为 ${SEARCH_MIN_CHARS} 位及以上`,
     });
   }
-  res.json(Q.searchPosts.all(q).map(mapPostPreview));
+  // Combine post-FTS + comment-FTS hits in JS (bm25 can't be used through
+  // a CTE with aggregation, so we union here). Best (lowest) rank wins;
+  // each row carries flags for which source(s) matched.
+  const byId = new Map();
+  for (const r of Q.searchPostsByPost.all(q)) {
+    byId.set(r.id, { id: r.id, rank: r.rank, in_post: 1, in_comment: 0 });
+  }
+  for (const r of Q.searchPostsByComment.all(q)) {
+    const cur = byId.get(r.id);
+    if (cur) {
+      cur.in_comment = 1;
+      if (r.rank < cur.rank) cur.rank = r.rank;
+    } else {
+      byId.set(r.id, { id: r.id, rank: r.rank, in_post: 0, in_comment: 1 });
+    }
+  }
+  if (!byId.size) return res.json([]);
+  const ordered = [...byId.values()].sort((a, b) => a.rank - b.rank).slice(0, SEARCH_LIMIT);
+  const ids = ordered.map((r) => r.id);
+  const placeholders = ids.map(() => '?').join(',');
+  const rows = db.prepare(
+    `SELECT ${postPreviewSql()} FROM posts WHERE id IN (${placeholders})`
+  ).all(...ids);
+  const rowsById = new Map(rows.map((r) => [r.id, r]));
+  res.json(ordered.map((hit) => ({
+    ...mapPostPreview(rowsById.get(hit.id)),
+    hit_in_post: !!hit.in_post,
+    hit_in_comment: !!hit.in_comment,
+  })));
 });
 
 // @mention inbox for either the current token's pseudonym or, for admins,
