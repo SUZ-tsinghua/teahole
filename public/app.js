@@ -1,9 +1,9 @@
-const TOKEN_STORE_KEY = 'anonforum.token';
-const THEME_STORE_KEY = 'anonforum.theme';
-const MY_REACTIONS_KEY = 'anonforum.myReactions';
-const MENTIONS_SEEN_KEY = 'anonforum.mentionsSeen';
-const HELP_SEEN_KEY = 'anonforum.helpSeen';
-const SIDEBAR_WIDTH_KEY = 'anonforum.sidebarWidth';
+const TOKEN_STORE_KEY = 'teahole.token';
+const THEME_STORE_KEY = 'teahole.theme';
+const MY_REACTIONS_KEY = 'teahole.myReactions';
+const MENTIONS_SEEN_KEY = 'teahole.mentionsSeen';
+const HELP_SEEN_KEY = 'teahole.helpSeen';
+const SIDEBAR_WIDTH_KEY = 'teahole.sidebarWidth';
 const SIDEBAR_MIN = 220;
 const SIDEBAR_MAX = 520;
 // Authoritative list lives on the server (REACTION_KIND_SET in server.js).
