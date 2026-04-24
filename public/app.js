@@ -1790,6 +1790,14 @@ function renderInline(text, parent) {
     const rest = text.slice(i);
     let m = /^`([^`\n]+)`/.exec(rest);
     if (m) { parent.appendChild(el('code', { textContent: m[1] })); i += m[0].length; continue; }
+    m = /^\$([^\s$][^$\n]*?[^\s$]|[^\s$])\$(?!\w)/.exec(rest);
+    if (m) {
+      const span = el('span', { className: 'math-inline' });
+      renderMathInto(span, m[1], false);
+      parent.appendChild(span);
+      i += m[0].length;
+      continue;
+    }
     m = /^!\[([^\]\n]*)\]\(([^)\s]+)\)/.exec(rest);
     if (m) {
       const url = safeImgUrl(m[2]);
@@ -1819,7 +1827,7 @@ function renderInline(text, parent) {
     // Stop a text chunk before the next markdown trigger. `!` must
     // detach from the chunk so the next iteration can spot `![`.
     const inSlice = rest.slice(1);
-    const stop = /!?\[|[`*]/.exec(inSlice);
+    const stop = /!?\[|[`*$]/.exec(inSlice);
     if (!stop) { push(rest); i += rest.length; continue; }
     const chunk = rest.slice(0, stop.index + 1);
     push(chunk);
@@ -1835,6 +1843,201 @@ function renderInlineWithBreaks(text, parent) {
   });
 }
 
+// --- Syntax highlighting for fenced code blocks ---
+
+const HL_LANG_ALIASES = {
+  js: 'js', javascript: 'js', jsx: 'js', mjs: 'js', cjs: 'js', node: 'js',
+  ts: 'js', typescript: 'js', tsx: 'js',
+  json: 'json', json5: 'json',
+  py: 'py', python: 'py', python3: 'py',
+  c: 'c', 'c++': 'c', cpp: 'c', cc: 'c', h: 'c', hpp: 'c', cxx: 'c',
+  java: 'c', kotlin: 'c', kt: 'c', scala: 'c', swift: 'c',
+  cs: 'c', 'c#': 'c', csharp: 'c', php: 'c',
+  go: 'go', golang: 'go',
+  rust: 'rust', rs: 'rust',
+  sh: 'sh', bash: 'sh', shell: 'sh', zsh: 'sh', ksh: 'sh',
+  sql: 'sql', postgres: 'sql', postgresql: 'sql', mysql: 'sql', sqlite: 'sql',
+  css: 'css', scss: 'css', sass: 'css', less: 'css',
+};
+
+const HL_RULES = {
+  js: {
+    rules: [
+      ['com', /\/\/[^\n]*/y],
+      ['com', /\/\*[\s\S]*?\*\//y],
+      ['str', /`(?:[^`\\]|\\[\s\S])*`/y],
+      ['str', /"(?:[^"\\\n]|\\[\s\S])*"/y],
+      ['str', /'(?:[^'\\\n]|\\[\s\S])*'/y],
+      ['num', /0[xX][0-9a-fA-F_]+n?|0[bB][01_]+n?|0[oO][0-7_]+n?|\d[\d_]*(?:\.\d[\d_]*)?(?:[eE][+-]?\d+)?n?/y],
+      ['ident', /[A-Za-z_$][\w$]*/y],
+      ['op', /[+\-*/%=<>!&|^~?:]+/y],
+    ],
+    keywords: new Set(['async','await','break','case','catch','class','const','continue','debugger','default','delete','do','else','export','extends','finally','for','from','function','if','import','in','instanceof','let','new','of','return','static','super','switch','this','throw','try','typeof','var','void','while','with','yield','as','enum','interface','type','public','private','protected','readonly','implements','declare','abstract','namespace','keyof','satisfies']),
+    constants: new Set(['true','false','null','undefined','NaN','Infinity','globalThis']),
+  },
+  py: {
+    rules: [
+      ['com', /#[^\n]*/y],
+      ['str', /[rRbBfFuU]{0,2}"""[\s\S]*?"""/y],
+      ['str', /[rRbBfFuU]{0,2}'''[\s\S]*?'''/y],
+      ['str', /[rRbBfFuU]{0,2}"(?:[^"\\\n]|\\[\s\S])*"/y],
+      ['str', /[rRbBfFuU]{0,2}'(?:[^'\\\n]|\\[\s\S])*'/y],
+      ['num', /0[xX][0-9a-fA-F_]+|0[bB][01_]+|0[oO][0-7_]+|\d[\d_]*(?:\.\d[\d_]*)?(?:[eE][+-]?\d+)?j?/y],
+      ['ident', /[A-Za-z_][\w]*/y],
+      ['op', /[+\-*/%=<>!&|^~?:@]+/y],
+    ],
+    keywords: new Set(['and','as','assert','async','await','break','class','continue','def','del','elif','else','except','finally','for','from','global','if','import','in','is','lambda','nonlocal','not','or','pass','raise','return','try','while','with','yield','match','case']),
+    constants: new Set(['True','False','None','self','cls','__name__','__init__']),
+  },
+  c: {
+    rules: [
+      ['com', /\/\/[^\n]*/y],
+      ['com', /\/\*[\s\S]*?\*\//y],
+      ['com', /#[^\n]*/y],
+      ['str', /"(?:[^"\\\n]|\\[\s\S])*"/y],
+      ['str', /'(?:[^'\\\n]|\\[\s\S])*'/y],
+      ['num', /0[xX][0-9a-fA-F_]+[uUlLfF]*|\d[\d_]*(?:\.\d[\d_]*)?(?:[eE][+-]?\d+)?[uUlLfFdD]*/y],
+      ['ident', /[A-Za-z_][\w]*/y],
+      ['op', /[+\-*/%=<>!&|^~?:]+/y],
+    ],
+    keywords: new Set(['auto','break','case','char','const','continue','default','do','double','else','enum','extern','float','for','goto','if','inline','int','long','register','restrict','return','short','signed','sizeof','static','struct','switch','typedef','union','unsigned','void','volatile','while','bool','class','public','private','protected','virtual','new','delete','try','catch','throw','namespace','using','template','typename','explicit','friend','operator','mutable','final','override','abstract','extends','implements','interface','package','import']),
+    constants: new Set(['true','false','TRUE','FALSE','NULL','nullptr','this','self']),
+  },
+  rust: {
+    rules: [
+      ['com', /\/\/[^\n]*/y],
+      ['com', /\/\*[\s\S]*?\*\//y],
+      ['str', /b?"(?:[^"\\\n]|\\[\s\S])*"/y],
+      ['str', /b?'(?:[^'\\\n]|\\[\s\S])*'/y],
+      ['num', /0[xX][0-9a-fA-F_]+(?:[iuf](?:8|16|32|64|128|size))?|\d[\d_]*(?:\.\d[\d_]*)?(?:[eE][+-]?\d+)?(?:[iuf](?:8|16|32|64|128|size))?/y],
+      ['ident', /[A-Za-z_][\w]*/y],
+      ['op', /[+\-*/%=<>!&|^~?:]+/y],
+    ],
+    keywords: new Set(['as','async','await','break','const','continue','crate','dyn','else','enum','extern','fn','for','if','impl','in','let','loop','match','mod','move','mut','pub','ref','return','static','struct','super','trait','type','unsafe','use','where','while','yield','box']),
+    constants: new Set(['true','false','None','Some','Ok','Err','self','Self']),
+  },
+  go: {
+    rules: [
+      ['com', /\/\/[^\n]*/y],
+      ['com', /\/\*[\s\S]*?\*\//y],
+      ['str', /`[^`]*`/y],
+      ['str', /"(?:[^"\\\n]|\\[\s\S])*"/y],
+      ['str', /'(?:[^'\\\n]|\\[\s\S])*'/y],
+      ['num', /0[xX][0-9a-fA-F_]+|\d[\d_]*(?:\.\d[\d_]*)?(?:[eE][+-]?\d+)?/y],
+      ['ident', /[A-Za-z_][\w]*/y],
+      ['op', /[+\-*/%=<>!&|^~?:]+/y],
+    ],
+    keywords: new Set(['break','case','chan','const','continue','default','defer','else','fallthrough','for','func','go','goto','if','import','interface','map','package','range','return','select','struct','switch','type','var']),
+    constants: new Set(['true','false','nil','iota']),
+  },
+  sql: {
+    rules: [
+      ['com', /--[^\n]*/y],
+      ['com', /\/\*[\s\S]*?\*\//y],
+      ['str', /'(?:[^'\\]|\\[\s\S]|'')*'/y],
+      ['str', /"(?:[^"\\]|\\[\s\S])*"/y],
+      ['num', /\d+(?:\.\d+)?/y],
+      ['ident', /[A-Za-z_][\w]*/y],
+      ['op', /[+\-*/%=<>!]+/y],
+    ],
+    keywords: new Set(['select','from','where','and','or','not','in','is','null','like','between','join','inner','left','right','outer','cross','on','group','by','order','asc','desc','limit','offset','having','union','all','distinct','insert','into','values','update','set','delete','create','table','drop','alter','add','column','primary','key','foreign','references','index','unique','constraint','default','cascade','as','with','case','when','then','else','end','exists','count','sum','avg','min','max','returning','conflict','do','nothing','begin','commit','rollback','transaction','if','pragma','integer','text','real','blob','numeric']),
+    constants: new Set(['true','false','null','current_timestamp','current_date','current_time']),
+    caseInsensitive: true,
+  },
+  sh: {
+    rules: [
+      ['com', /#[^\n]*/y],
+      ['str', /"(?:[^"\\\n]|\\[\s\S])*"/y],
+      ['str', /'[^'\n]*'/y],
+      ['var', /\$\{[^}\n]*\}|\$[A-Za-z_]\w*|\$[?$!#0-9]/y],
+      ['num', /\d+/y],
+      ['ident', /[A-Za-z_][\w.-]*/y],
+      ['op', /[|&;<>()={}!]+/y],
+    ],
+    keywords: new Set(['if','then','else','elif','fi','case','esac','for','while','until','do','done','in','function','return','break','continue','exit','export','local','readonly','declare','unset','alias','source','trap','shift','set']),
+    constants: new Set(['true','false']),
+  },
+  json: {
+    rules: [
+      ['str', /"(?:[^"\\\n]|\\[\s\S])*"/y],
+      ['num', /-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/y],
+      ['ident', /[A-Za-z]+/y],
+      ['op', /[{}[\],:]/y],
+    ],
+    keywords: new Set(),
+    constants: new Set(['true','false','null']),
+  },
+  css: {
+    rules: [
+      ['com', /\/\*[\s\S]*?\*\//y],
+      ['str', /"(?:[^"\\\n]|\\[\s\S])*"/y],
+      ['str', /'(?:[^'\\\n]|\\[\s\S])*'/y],
+      ['num', /#[0-9a-fA-F]{3,8}\b/y],
+      ['num', /-?\d+(?:\.\d+)?(?:px|rem|em|%|vh|vw|vmin|vmax|s|ms|deg|rad|turn|fr|ch|ex)?/y],
+      ['kw', /@[A-Za-z-]+/y],
+      ['ident', /--?[A-Za-z_][\w-]*/y],
+      ['ident', /[A-Za-z_][\w-]*/y],
+      ['op', /[{}:;,()>~+*]+/y],
+    ],
+    keywords: new Set(['important','inherit','initial','unset','auto','none','normal','bold','italic']),
+    constants: new Set(),
+  },
+};
+
+function highlightInto(node, langRaw, code) {
+  const cfg = HL_RULES[HL_LANG_ALIASES[(langRaw || '').toLowerCase()]];
+  if (!cfg) { node.textContent = code; return; }
+  const rules = cfg.rules;
+  let pending = '';
+  const flushPending = () => {
+    if (pending) { node.appendChild(document.createTextNode(pending)); pending = ''; }
+  };
+  const appendTok = (type, s) => {
+    if (type === 'text') { pending += s; return; }
+    flushPending();
+    node.appendChild(el('span', { className: `tok-${type}`, textContent: s }));
+  };
+  let i = 0;
+  while (i < code.length) {
+    let hitType = null, hitValue = null;
+    for (let r = 0; r < rules.length; r++) {
+      const rule = rules[r];
+      const re = rule[1];
+      re.lastIndex = i;
+      const m = re.exec(code);
+      if (m && m.index === i && m[0]) { hitType = rule[0]; hitValue = m[0]; break; }
+    }
+    if (hitValue === null) { pending += code[i]; i++; continue; }
+    if (hitType === 'ident') {
+      const probe = cfg.caseInsensitive ? hitValue.toLowerCase() : hitValue;
+      if (cfg.keywords.has(probe)) hitType = 'kw';
+      else if (cfg.constants.has(probe)) hitType = 'bool';
+      else if (code[i + hitValue.length] === '(') hitType = 'fn';
+      else hitType = 'text';
+    }
+    appendTok(hitType, hitValue);
+    i += hitValue.length;
+  }
+  flushPending();
+}
+
+// --- LaTeX math via KaTeX ---
+
+const KATEX_OPTS_INLINE = { throwOnError: false, displayMode: false, output: 'html', strict: 'ignore' };
+const KATEX_OPTS_BLOCK  = { throwOnError: false, displayMode: true,  output: 'html', strict: 'ignore' };
+
+function renderMathInto(node, expr, displayMode) {
+  const k = window.katex;
+  if (k && typeof k.render === 'function') {
+    try {
+      k.render(expr, node, displayMode ? KATEX_OPTS_BLOCK : KATEX_OPTS_INLINE);
+      return;
+    } catch (_) { /* fall through to text */ }
+  }
+  const wrap = displayMode ? '$$' : '$';
+  node.textContent = wrap + expr + wrap;
+}
+
 function renderMarkdown(text) {
   const frag = document.createDocumentFragment();
   if (typeof text !== 'string' || !text) return frag;
@@ -1842,15 +2045,43 @@ function renderMarkdown(text) {
   let i = 0;
   while (i < lines.length) {
     const line = lines[i];
-    const fence = /^```([A-Za-z0-9_-]*)\s*$/.exec(line);
+    const fence = /^```([A-Za-z0-9_+#-]*)\s*$/.exec(line);
     if (fence) {
       const buf = [];
       i++;
       while (i < lines.length && !/^```\s*$/.test(lines[i])) { buf.push(lines[i]); i++; }
       if (i < lines.length) i++;
-      const code = el('code', { textContent: buf.join('\n') });
-      if (fence[1]) code.className = `lang-${fence[1]}`;
+      const lang = fence[1] || '';
+      const code = el('code');
+      if (lang) code.className = `lang-${lang}`;
+      highlightInto(code, lang, buf.join('\n'));
       frag.appendChild(el('pre', {}, [code]));
+      continue;
+    }
+    if (line.startsWith('$$')) {
+      const buf = [];
+      let rest = line.slice(2);
+      if (rest.endsWith('$$')) {
+        buf.push(rest.slice(0, -2));
+        i++;
+      } else {
+        buf.push(rest);
+        i++;
+        while (i < lines.length) {
+          const ln = lines[i];
+          const trimmed = ln.replace(/\s+$/, '');
+          if (trimmed.endsWith('$$')) {
+            buf.push(trimmed.slice(0, -2));
+            i++;
+            break;
+          }
+          buf.push(ln);
+          i++;
+        }
+      }
+      const wrap = el('div', { className: 'math-block' });
+      renderMathInto(wrap, buf.join('\n').trim(), true);
+      frag.appendChild(wrap);
       continue;
     }
     if (line.trim() === '') { i++; continue; }
@@ -1897,9 +2128,13 @@ function renderMarkdown(text) {
     while (i < lines.length && lines[i].trim() !== '' &&
            !/^```/.test(lines[i]) && !/^#{1,3}\s+/.test(lines[i]) &&
            !/^>\s?/.test(lines[i]) && !/^[-*]\s+/.test(lines[i]) &&
-           !/^\d+\.\s+/.test(lines[i])) {
+           !/^\d+\.\s+/.test(lines[i]) && !lines[i].startsWith('$$')) {
       buf.push(lines[i]); i++;
     }
+    // A line that starts with ``` but doesn't match the fence regex (e.g.
+    // `\`\`\`1+1\`\`\``) would otherwise spin the outer loop forever, since
+    // the guard above rejects it without advancing i.
+    if (buf.length === 0) { buf.push(lines[i]); i++; }
     const p = el('p');
     renderInlineWithBreaks(buf.join('\n'), p);
     frag.appendChild(p);
