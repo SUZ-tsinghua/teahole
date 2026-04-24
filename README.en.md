@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/banner.jpg" alt="teahole banner" width="100%">
+</p>
+
 # teahole / 茶园树洞
 
 > English · [中文](README.md)
