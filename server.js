@@ -11,8 +11,9 @@ const db = require('./db');
 
 const EMAIL_CODE_TTL_MS = 10 * 60 * 1000;
 const EMAIL_CODE_MAX_ATTEMPTS = 5;
+const DATA_DIR = process.env.DATA_DIR || __dirname;
 const DEPT_ALLOWLIST_FILE =
-  process.env.DEPT_ALLOWLIST_FILE || path.join(__dirname, 'dept-allowlist.txt');
+  process.env.DEPT_ALLOWLIST_FILE || path.join(DATA_DIR, 'dept-allowlist.txt');
 
 // With no RESEND_API_KEY we log the code instead of sending — keeps the
 // local dev flow unblocked without a real mail account.
@@ -80,7 +81,7 @@ const SEARCH_MIN_CHARS = 3;
 const MENTIONS_LIMIT = 50;
 const RSS_LIMIT = 50;
 const MAX_UPLOAD_BYTES = 4 * 1024 * 1024;
-const UPLOAD_DIR = path.join(__dirname, 'uploads');
+const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(DATA_DIR, 'uploads');
 const UPLOAD_EXT_FOR_MIME = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' };
 const UPLOAD_NAME_RE = /^[a-f0-9]{64}\.(jpg|png|webp)$/;
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
@@ -168,6 +169,10 @@ app.use((req, res, next) => {
 app.use(express.json({ limit: '32kb' }));
 app.use(cookieParser());
 app.use(express.static(path.join(__dirname, 'public')));
+
+// Cheap liveness probe for fly's health check — intentionally does not
+// touch the DB, so a stuck SQLite write doesn't cause rolling restarts.
+app.get('/healthz', (req, res) => res.type('text/plain').send('ok'));
 
 function qualify(alias, col) {
   return alias ? `${alias}.${col}` : col;
