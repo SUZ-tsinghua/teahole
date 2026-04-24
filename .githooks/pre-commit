@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Pre-commit hook: syntax-check staged JS + project-wide type check.
+# Skip with `git commit --no-verify` (please don't).
+
+set -e
+
+# Only act on staged files so reverting unrelated work isn't punished.
+staged_js=$(git diff --cached --name-only --diff-filter=ACM \
+  | grep -E '\.(js|cjs|mjs)$' \
+  | grep -v -E '^(node_modules/|public/vendor/)' || true)
+
+if [ -n "$staged_js" ]; then
+  echo "[pre-commit] node -c on staged JS..."
+  while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    node --check "$f" || { echo "[pre-commit] syntax error in $f"; exit 1; }
+  done <<< "$staged_js"
+fi
+
+# Guard against obvious secret files slipping in.
+banned=$(git diff --cached --name-only --diff-filter=ACM \
+  | grep -E '(^\.env$|^\.env\.|\.pem$|\.key$|id_rsa|credentials\.json)' || true)
+if [ -n "$banned" ]; then
+  echo "[pre-commit] refusing to commit likely-secret files:"
+  echo "$banned"
+  echo "[pre-commit] add to .gitignore or rename if this is intentional."
+  exit 1
+fi
+
+# Full-project type check (fast; ~1-2s on this repo).
+echo "[pre-commit] npm run typecheck..."
+npm run --silent typecheck
+
+echo "[pre-commit] ok"
