@@ -6,6 +6,10 @@
 
 > English · [中文](README.md)
 
+> **Internal access only.** Registration is restricted to an email allowlist to
+> keep the community small. If you'd like to try it out, reach out by email or
+> WeChat: <cynb2dwszz@privaterelay.appleid.com> · WeChat `<your-wechat-id>`
+
 A login-gated community forum where **regular members stay unlinkable by
 default, while admins can speak publicly under their usernames**.
 Live at <https://teahole.fly.dev>.
