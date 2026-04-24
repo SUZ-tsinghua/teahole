@@ -14,6 +14,7 @@
 //   SECTION: feed                feed list + channel filter bar
 //   SECTION: saved-followed     saved-posts + followed-posts UI
 //   SECTION: bulletins          bulletin list + admin dialog
+//   SECTION: docs               shared-doc list/reader/editor
 //   SECTION: compose-upload     image picker wiring for the composer
 //   SECTION: post-card          post preview card renderer
 //   SECTION: search             search input + results
@@ -87,7 +88,12 @@ async function api(method, path, body) {
     body: body ? JSON.stringify(body) : undefined,
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  if (!res.ok) {
+    const err = new Error(data.error || `HTTP ${res.status}`);
+    err.status = res.status;
+    err.data = data;
+    throw err;
+  }
   return data;
 }
 
@@ -186,7 +192,10 @@ function metaLine(pseudonym, createdAt, editedAt) {
 }
 
 // SECTION: view-routing
-const VIEW = { EMPTY: 'empty-view', THREAD: 'thread-view', COMPOSE: 'compose-view', BULLETIN: 'bulletin-view' };
+const VIEW = {
+  EMPTY: 'empty-view', THREAD: 'thread-view', COMPOSE: 'compose-view',
+  BULLETIN: 'bulletin-view', DOC: 'doc-view',
+};
 const viewNodes = Object.fromEntries(Object.values(VIEW).map((id) => [id, $('#' + id)]));
 const readerNode = $('#reader');
 let currentView = null;
@@ -201,7 +210,12 @@ let lastMentions = [];
 let channels = [];
 let bulletins = [];
 let currentBulletin = null;
+// 'posts' shows the post feed; 'docs' shows the shared-doc list. Persists
+// across channel/search filter changes, but not across reloads.
+let feedMode = 'posts';
+let currentDoc = null;
 let savedIds = new Set();
+let savedDocIds = new Set();
 // Per-user channel prefs: Map<channelId, { pinned, muted }>
 let channelPrefs = new Map();
 let mutedExpanded = false;
@@ -294,24 +308,31 @@ function closeSidebarDrawer() {
 function closeReader() {
   currentThread = null;
   currentBulletin = null;
+  currentDoc = null;
+  clearTimeout(docPreviewTimer);
   markActivePost(null);
   markActiveBulletin(null);
+  markActiveDoc(null);
   showReader(VIEW.EMPTY);
   syncUrl(null);
 }
 
 const POST_PATH_RE = /^\/p\/(\d{1,10})$/;
 const BULLETIN_PATH_RE = /^\/b\/(\d{1,10})$/;
+const DOC_PATH_RE = /^\/d\/(\d{1,10})$/;
 function routeFromPath() {
   const p = POST_PATH_RE.exec(location.pathname);
   if (p) return { kind: 'post', id: parseInt(p[1], 10) };
   const b = BULLETIN_PATH_RE.exec(location.pathname);
   if (b) return { kind: 'bulletin', id: parseInt(b[1], 10) };
+  const d = DOC_PATH_RE.exec(location.pathname);
+  if (d) return { kind: 'doc', id: parseInt(d[1], 10) };
   return null;
 }
 function syncUrl(route) {
   const target = !route ? '/'
     : route.kind === 'bulletin' ? `/b/${route.id}`
+    : route.kind === 'doc' ? `/d/${route.id}`
     : `/p/${route.id}`;
   if (location.pathname === target) return;
   history.pushState(null, '', target);
@@ -482,10 +503,13 @@ async function refreshMe() {
     await loadChannelUnread();
     await loadFollowed();
     await loadFeed();
+    renderComposeButton();
+    renderFeedTabs();
     showReader(VIEW.EMPTY);
     const route = routeFromPath();
     if (route && route.kind === 'post') await openThread(route.id, { pushUrl: false });
     else if (route && route.kind === 'bulletin') await openBulletin(route.id, { pushUrl: false });
+    else if (route && route.kind === 'doc') await openDoc(route.id, { pushUrl: false });
     schedulePollingMentions();
     refreshMentions({ silent: true }).catch(() => {});
     // Admins post under their username with no quota cost — auto-claim a
@@ -652,22 +676,23 @@ function renderFilterBar() {
   const bar = $('#filter-bar');
   bar.innerHTML = '';
   const label = $('#feed-label');
+  const base = feedMode === 'docs' ? '共享文档' : '动态';
   if (!filterState.kind) {
     bar.hidden = true;
-    label.textContent = '动态';
+    label.textContent = base;
   } else {
     bar.hidden = false;
     let text, sub;
     if (filterState.kind === 'channel') {
       const ch = channelById(filterState.value);
       text = `频道：${ch ? ch.name : '—'}`;
-      sub = '动态 · 频道';
+      sub = `${base} · 频道`;
     } else if (filterState.kind === 'saved') {
       text = '仅显示我收藏的';
-      sub = '动态 · 收藏';
+      sub = `${base} · 收藏`;
     } else {
       text = `搜索：${filterState.value}`;
-      sub = '动态 · 搜索';
+      sub = `${base} · 搜索`;
     }
     label.textContent = sub;
     bar.append(
@@ -683,7 +708,8 @@ async function clearFilter() {
   $('#search-input').value = '';
   $('#search-clear').hidden = true;
   renderFilterBar();
-  await loadFeed();
+  if (feedMode === 'docs') await loadDocs();
+  else await loadFeed();
 }
 
 async function loadFeed() {
@@ -729,7 +755,9 @@ async function filterByChannel(channelId) {
   $('#search-input').value = '';
   $('#search-clear').hidden = true;
   markChannelSeen(channelId).catch(() => {});
-  await loadFeed();
+  renderFilterBar();
+  if (feedMode === 'docs') await loadDocs();
+  else await loadFeed();
   showReader(VIEW.EMPTY);
 }
 
@@ -913,6 +941,12 @@ async function loadSavedIds() {
   } catch {
     savedIds = new Set();
   }
+  try {
+    const r = await api('GET', '/api/saved-docs');
+    savedDocIds = new Set(r.ids);
+  } catch {
+    savedDocIds = new Set();
+  }
 }
 
 let lastFollowedPosts = [];
@@ -1006,11 +1040,25 @@ async function toggleSaved(postId) {
   }
 }
 
+async function toggleSavedDoc(docId) {
+  const wasSaved = savedDocIds.has(docId);
+  try {
+    await api(wasSaved ? 'DELETE' : 'POST', `/api/saved-docs/${docId}`);
+    if (wasSaved) savedDocIds.delete(docId); else savedDocIds.add(docId);
+    renderDocActions(currentDocRow);
+    if (filterState.kind === 'saved' && feedMode === 'docs') await loadDocs();
+  } catch (err) {
+    alert(err.message);
+  }
+}
+
 async function filterBySaved() {
   filterState = { kind: 'saved', value: null };
   $('#search-input').value = '';
   $('#search-clear').hidden = true;
-  await loadFeed();
+  renderFilterBar();
+  if (feedMode === 'docs') await loadDocs();
+  else await loadFeed();
   showReader(VIEW.EMPTY);
 }
 
@@ -1119,6 +1167,501 @@ function closeBulletinDialog() { $('#bulletin-dialog').hidden = true; }
 
 $('#new-bulletin-btn').addEventListener('click', () => openBulletinDialog(null));
 $('#saved-filter-btn').addEventListener('click', () => filterBySaved());
+
+// SECTION: docs
+// --- Shared docs: wiki-style markdown pages tied to a channel ---
+//
+// Privacy mirror of posts: the server stores created_token_hash only as
+// a delete gate and nulls it out via rotate() when the token expires.
+// Anyone with a valid posting token may edit; last_editor_pseudonym is
+// displayed but never joined back to any user row.
+//
+// Edit UX: the doc view is a single surface. Read mode renders
+// markdown; edit mode swaps the rendered body for a textarea with a
+// live preview pane next to it (stacked on narrow viewports). There is
+// no separate compose screen — "新建文档" opens an empty doc in edit
+// mode on the same surface.
+
+// Shape of the in-memory doc row the reader/editor works with. null id
+// means this is a draft that hasn't been POSTed yet.
+let currentDocRow = null;
+let isDocEditing = false;
+let docPreviewTimer = null;
+
+// Single path for flipping the feed mode. All callers go through here
+// so the tab, header label, compose button, pane visibility, and the
+// list fetch stay in lock-step.
+function setFeedMode(mode, { reload = true } = {}) {
+  if (mode !== 'posts' && mode !== 'docs') mode = 'posts';
+  const changed = feedMode !== mode;
+  if (changed) clearTimeout(docPreviewTimer);
+  feedMode = mode;
+  for (const btn of $$('#feed-tabs .feed-tab')) {
+    btn.classList.toggle('is-active', btn.dataset.mode === mode);
+  }
+  renderFeedTabs();
+  renderComposeButton();
+  renderFilterBar();
+  if (reload && changed) {
+    if (mode === 'docs') loadDocs().catch(() => {});
+    else loadFeed().catch(() => {});
+  }
+}
+
+
+function renderFeedTabs() {
+  const feedNode = $('#feed');
+  const docsNode = $('#docs-feed');
+  if (feedMode === 'docs') {
+    feedNode.hidden = true;
+    docsNode.hidden = false;
+  } else {
+    feedNode.hidden = false;
+    docsNode.hidden = true;
+  }
+}
+
+function renderComposeButton() {
+  const btn = $('#compose-btn');
+  if (!btn) return;
+  btn.innerHTML = '';
+  const plus = el('span', { className: 'plus', textContent: '＋' });
+  const label = el('span', {
+    textContent: feedMode === 'docs' ? ' 新建文档' : ' 发新帖',
+  });
+  btn.append(plus, label);
+}
+
+async function loadDocs() {
+  const box = $('#docs-feed');
+  if (!box) return;
+  box.innerHTML = '';
+  let rows;
+  try {
+    if (filterState.kind === 'saved') {
+      const r = await api('GET', '/api/saved-docs');
+      savedDocIds = new Set(r.ids);
+      rows = r.docs;
+    } else if (filterState.kind === 'search') {
+      rows = await api('GET', `/api/docs?q=${encodeURIComponent(filterState.value)}`);
+    } else if (filterState.kind === 'channel') {
+      const ch = channelById(filterState.value);
+      if (!ch) { clearFilter(); return; }
+      rows = await api('GET', `/api/docs?channel=${encodeURIComponent(ch.slug)}`);
+    } else {
+      rows = await api('GET', '/api/docs');
+    }
+  } catch (err) {
+    box.appendChild(el('div', { className: 'feed-empty', textContent: err.message }));
+    return;
+  }
+  if (!rows.length) {
+    const hint = filterState.kind === 'saved'
+      ? '还没有收藏任何共享文档。'
+      : filterState.kind === 'search'
+      ? '没有匹配的共享文档。'
+      : filterState.kind === 'channel'
+      ? '该频道还没有共享文档。点击「新建文档」起个头。'
+      : '还没有共享文档。课程笔记、申请指南、选课评价…都可以写在这里。';
+    box.appendChild(el('div', { className: 'feed-empty', textContent: hint }));
+    return;
+  }
+  for (const d of rows) box.appendChild(renderDocCard(d));
+  if (currentDoc != null) markActiveDoc(currentDoc);
+}
+
+function renderDocCard(d) {
+  const titleRow = el('div', { className: 'post-title-row' }, [
+    el('span', { className: 'id-badge id-badge--doc', textContent: '📄' }),
+    el('span', { className: 'post-title', textContent: d.title }),
+  ]);
+  const children = [titleRow];
+  const ch = channelById(d.channel_id);
+  if (ch) {
+    const badge = el('button', {
+      type: 'button', className: 'channel-badge small', textContent: ch.name, title: ch.description || ch.name,
+    });
+    badge.addEventListener('click', (e) => { e.stopPropagation(); filterByChannel(ch.id); });
+    children.push(badge);
+  }
+  const lastTs = d.updated_at || d.created_at;
+  const editor = d.last_editor_pseudonym || d.created_pseudonym;
+  const metaLineEl = el('div', { className: 'meta doc-meta' });
+  applyIdHue(metaLineEl, editor);
+  metaLineEl.textContent =
+    `@${editor} · ${d.updated_at ? '最近编辑于' : '创建于'} ${fmtDate(lastTs)}`;
+  children.push(metaLineEl);
+  const node = el('div', { className: 'post doc-card' }, children);
+  node.dataset.docId = d.id;
+  node.addEventListener('click', () => openDoc(d.id));
+  return node;
+}
+
+function markActiveDoc(id) {
+  const wanted = id == null ? null : String(id);
+  for (const n of $$('.doc-card')) {
+    n.classList.toggle('active', n.dataset.docId === wanted);
+  }
+}
+
+function syncDocsFeedTab() {
+  // Keep the docs tab visually/logically active whenever the doc view
+  // is the surface — so "返回" lands in the docs list, not posts feed.
+  if (feedMode !== 'docs') setFeedMode('docs');
+}
+
+async function openDoc(id, { pushUrl = true } = {}) {
+  currentDoc = id;
+  currentThread = null;
+  currentBulletin = null;
+  markActivePost(null);
+  markActiveBulletin(null);
+  markActiveDoc(id);
+  syncDocsFeedTab();
+  if (pushUrl) syncUrl({ kind: 'doc', id });
+  let row;
+  try {
+    row = await api('GET', `/api/docs/${id}`);
+  } catch (err) {
+    currentDocRow = null;
+    isDocEditing = false;
+    renderDocView({ errorMessage: err.message || '未找到', fallbackId: id });
+    return;
+  }
+  currentDocRow = row;
+  isDocEditing = false;
+  renderDocView();
+  showReader(VIEW.DOC);
+  readerNode.scrollTo({ top: 0, behavior: 'instant' });
+}
+
+// Open the doc surface with an unsaved draft, pre-entered in edit mode.
+// Used by the "新建文档" button. No URL push until the first save.
+function openNewDoc() {
+  currentDoc = null;
+  currentDocRow = {
+    id: null,
+    channel_id: (filterState.kind === 'channel' ? filterState.value : null),
+    title: '',
+    content: '',
+    created_pseudonym: null,
+    last_editor_pseudonym: null,
+    created_at: null,
+    updated_at: null,
+  };
+  isDocEditing = true;
+  currentThread = null;
+  currentBulletin = null;
+  markActivePost(null);
+  markActiveBulletin(null);
+  markActiveDoc(null);
+  syncDocsFeedTab();
+  renderDocView();
+  showReader(VIEW.DOC);
+  const titleInput = $('#doc-title-input');
+  if (titleInput) titleInput.focus();
+}
+
+// Single renderer shared by read and edit modes — DOM stays stable so
+// there's no page-level switch when the user enters/leaves edit.
+function renderDocView(opts = {}) {
+  const row = currentDocRow;
+  const errEl = $('#doc-err');
+  if (errEl) errEl.textContent = '';
+
+  if (opts.errorMessage || !row) {
+    $('#doc-title').textContent = opts.fallbackId != null
+      ? `文档 #${opts.fallbackId}` : '文档';
+    $('#doc-title').hidden = false;
+    $('#doc-title-input').hidden = true;
+    $('#doc-meta').textContent = '';
+    $('#doc-body').innerHTML = '';
+    $('#doc-body').hidden = false;
+    $('#doc-body').appendChild(el('p', { className: 'muted', textContent: opts.errorMessage || '未找到' }));
+    $('#doc-editor').hidden = true;
+    $('#doc-editor-toolbar').hidden = true;
+    $('#doc-channel').hidden = true;
+    $('#doc-channel-picker').hidden = true;
+    $('#doc-actions').hidden = true;
+    return;
+  }
+
+  const titleEl = $('#doc-title');
+  const titleInput = $('#doc-title-input');
+  const body = $('#doc-body');
+  const editor = $('#doc-editor');
+  const toolbar = $('#doc-editor-toolbar');
+  const channelChip = $('#doc-channel');
+  const channelPicker = $('#doc-channel-picker');
+  const meta = $('#doc-meta');
+
+  if (isDocEditing) {
+    titleEl.hidden = true;
+    titleInput.hidden = false;
+    titleInput.value = row.title || '';
+    body.hidden = true;
+    editor.hidden = false;
+    toolbar.hidden = false;
+    const textarea = $('#doc-editor-input');
+    textarea.value = row.content || '';
+    renderDocPreview(textarea.value);
+    // Only show the channel picker for new docs (channel is fixed once created).
+    if (row.id == null) {
+      channelChip.hidden = true;
+      channelPicker.hidden = false;
+      renderDocChannelSelect(row.channel_id);
+    } else {
+      channelPicker.hidden = true;
+      renderDocChannel(row.channel_id);
+    }
+  } else {
+    titleEl.hidden = false;
+    titleInput.hidden = true;
+    titleEl.textContent = row.title;
+    body.hidden = false;
+    body.innerHTML = '';
+    body.appendChild(renderMarkdown(row.content || ''));
+    editor.hidden = true;
+    toolbar.hidden = true;
+    channelPicker.hidden = true;
+    renderDocChannel(row.channel_id);
+  }
+
+  meta.innerHTML = '';
+  if (row.id == null) {
+    meta.textContent = '新文档尚未发布';
+  } else {
+    const lastEditor = row.last_editor_pseudonym || row.created_pseudonym;
+    applyIdHue(meta, lastEditor);
+    const parts = [`创建者 @${row.created_pseudonym}`, fmtDate(row.created_at)];
+    if (row.updated_at) parts.push(`最近编辑 @${lastEditor} · ${fmtDate(row.updated_at)}`);
+    meta.textContent = parts.join(' · ');
+  }
+
+  renderDocActions(row);
+}
+
+function renderDocChannelSelect(selected) {
+  const sel = $('#doc-channel-select');
+  if (!sel) return;
+  sel.innerHTML = '';
+  sel.appendChild(el('option', { value: '', textContent: '（无）' }));
+  for (const ch of channels) {
+    sel.appendChild(el('option', { value: String(ch.id), textContent: ch.name }));
+  }
+  if (selected != null) sel.value = String(selected);
+}
+
+function renderDocPreview(text) {
+  const box = $('#doc-editor-preview');
+  if (!box) return;
+  box.innerHTML = '';
+  box.appendChild(renderMarkdown(text || ''));
+}
+
+function scheduleDocPreview() {
+  clearTimeout(docPreviewTimer);
+  docPreviewTimer = setTimeout(() => {
+    const ta = $('#doc-editor-input');
+    if (ta && !$('#doc-editor').hidden) renderDocPreview(ta.value);
+  }, 150);
+}
+
+function renderDocChannel(channelId) {
+  const box = $('#doc-channel');
+  if (!box) return;
+  box.innerHTML = '';
+  const ch = channelById(channelId);
+  if (!ch) { box.hidden = true; return; }
+  box.hidden = false;
+  const chip = el('button', {
+    type: 'button', className: 'channel-badge', textContent: ch.name,
+    title: ch.description || ch.name,
+  });
+  chip.addEventListener('click', () => {
+    setFeedMode('docs', { reload: false });
+    filterByChannel(ch.id);
+  });
+  box.appendChild(chip);
+}
+
+function renderDocActions(row) {
+  const box = $('#doc-actions');
+  box.innerHTML = '';
+  const buttons = [];
+  const t = getToken();
+  if (isDocEditing) {
+    const save = el('button', { type: 'button', className: 'ghost small', textContent: row.id == null ? '发布' : '保存' });
+    save.addEventListener('click', () => saveDoc());
+    buttons.push(save);
+    const cancel = el('button', { type: 'button', className: 'ghost small', textContent: '取消' });
+    cancel.addEventListener('click', () => cancelDocEdit());
+    buttons.push(cancel);
+  } else {
+    if (row.id != null) {
+      const saved = savedDocIds.has(row.id);
+      const saveBtn = el('button', {
+        type: 'button',
+        className: 'ghost small' + (saved ? ' is-saved' : ''),
+        textContent: saved ? '★ 已收藏' : '☆ 收藏',
+      });
+      saveBtn.addEventListener('click', () => toggleSavedDoc(row.id));
+      buttons.push(saveBtn);
+    }
+    // Anyone with a valid posting token can edit; admin always can.
+    if (t || isAdmin) {
+      const edit = el('button', { type: 'button', className: 'ghost small', textContent: '编辑' });
+      edit.addEventListener('click', () => enterDocEdit());
+      buttons.push(edit);
+    }
+    // Delete gate: creator (while token is live) OR admin. The server
+    // checks for real — we only show the button when it would succeed.
+    const ownsCreator = t && t.pseudonym === row.created_pseudonym;
+    if (row.id != null && (isAdmin || ownsCreator)) {
+      const del = el('button', { type: 'button', className: 'ghost small danger', textContent: '删除' });
+      del.addEventListener('click', () => deleteDoc(row));
+      buttons.push(del);
+    }
+  }
+  if (!buttons.length) { box.hidden = true; return; }
+  box.hidden = false;
+  box.append(...buttons);
+}
+
+function enterDocEdit() {
+  if (!currentDocRow) return;
+  const t = getToken();
+  if (!t && !isAdmin) { openDialog(); return; }
+  isDocEditing = true;
+  renderDocView();
+  const ta = $('#doc-editor-input');
+  if (ta) { ta.focus(); ta.scrollTop = 0; }
+}
+
+function cancelDocEdit() {
+  if (currentDocRow && currentDocRow.id == null) {
+    // New draft with no server row — drop it and go back to the list.
+    currentDocRow = null;
+    isDocEditing = false;
+    closeReader();
+    return;
+  }
+  isDocEditing = false;
+  renderDocView();
+}
+
+// The "version" we compare against on the server. Docs that have never
+// been edited have updated_at = NULL, so we fall back to created_at so
+// there's always a finite number to round-trip.
+function docVersion(row) {
+  return row && (row.updated_at || row.created_at);
+}
+
+async function saveDoc() {
+  if (!currentDocRow) return;
+  const errEl = $('#doc-err');
+  errEl.textContent = '';
+  const t = getToken();
+  if (!t) { errEl.textContent = '请先获取发帖令牌。'; openDialog(); return; }
+  const title = ($('#doc-title-input').value || '').trim();
+  const content = ($('#doc-editor-input').value || '').trim();
+  if (!title) { errEl.textContent = '标题不能为空。'; return; }
+  if (!content) { errEl.textContent = '内容不能为空。'; return; }
+  const isNew = currentDocRow.id == null;
+  const body = { token: t.token, title, content };
+  if (isNew) {
+    const rawCh = $('#doc-channel-select').value;
+    body.channel_id = rawCh ? parseInt(rawCh, 10) : null;
+  } else {
+    body.expected_version = docVersion(currentDocRow);
+  }
+  try {
+    const row = isNew
+      ? await api('POST', '/api/docs', body)
+      : await api('PUT', `/api/docs/${currentDocRow.id}`, body);
+    currentDocRow = row;
+    currentDoc = row.id;
+    isDocEditing = false;
+    syncUrl({ kind: 'doc', id: row.id });
+    renderDocView();
+    if (feedMode === 'docs') loadDocs().catch(() => {});
+  } catch (err) {
+    if (err.status === 409 && err.data && err.data.latest) {
+      handleDocConflict(err.data.latest, title, content);
+    } else {
+      errEl.textContent = err.message;
+    }
+  }
+}
+
+// Optimistic-lock conflict: someone else saved between fetch and save.
+// Rebase onto the server's latest so the user can see what changed, and
+// keep their draft below as a markdown blockquote so nothing is lost.
+function handleDocConflict(latest, draftTitle, draftContent) {
+  currentDocRow = latest;
+  currentDoc = latest.id;
+  isDocEditing = true;
+  renderDocView();
+  const titleInput = $('#doc-title-input');
+  const textarea = $('#doc-editor-input');
+  if (draftTitle && draftTitle !== latest.title) titleInput.value = draftTitle;
+  const quoted = draftContent
+    .split('\n')
+    .map((line) => `> ${line}`)
+    .join('\n');
+  textarea.value = `${latest.content}\n\n---\n\n> **你的未保存草稿：**\n${quoted}`;
+  renderDocPreview(textarea.value);
+  $('#doc-err').textContent =
+    '有人在你之前编辑了这份文档。上方已载入最新版本，你的未保存草稿保留在末尾的引用块里 — 合并后重新保存。';
+}
+
+async function deleteDoc(row) {
+  if (!confirm(`删除共享文档「${row.title}」？此操作不可撤销。`)) return;
+  const body = deleteRequestBody();
+  if (!body) { openDialog(); return; }
+  try {
+    await api('DELETE', `/api/docs/${row.id}`, body);
+    currentDoc = null;
+    currentDocRow = null;
+    isDocEditing = false;
+    closeReader();
+    if (feedMode === 'docs') await loadDocs();
+  } catch (err) {
+    alert(err.message);
+  }
+}
+
+$('#doc-editor-input').addEventListener('input', scheduleDocPreview);
+
+$('#doc-image-btn').addEventListener('click', () => {
+  const status = $('#doc-image-status');
+  status.textContent = '';
+  const picker = el('input', {
+    type: 'file', accept: 'image/jpeg,image/png,image/webp', hidden: true,
+  });
+  document.body.appendChild(picker);
+  picker.addEventListener('change', async () => {
+    const file = picker.files && picker.files[0];
+    picker.remove();
+    if (!file) return;
+    if (!getToken() && !isAdmin) { $('#doc-err').textContent = '请先获取发帖令牌。'; openDialog(); return; }
+    status.textContent = '上传中…';
+    try {
+      const url = await uploadImage(file);
+      const ta = $('#doc-editor-input');
+      insertAtCursor(ta, `![](${url})\n`);
+      renderDocPreview(ta.value);
+      status.textContent = '已插入到正文。EXIF 已被剥离。';
+    } catch (err) {
+      status.textContent = err.message;
+    }
+  });
+  picker.click();
+});
+
+for (const btn of $$('#feed-tabs .feed-tab')) {
+  btn.addEventListener('click', () => setFeedMode(btn.dataset.mode));
+}
 
 // SECTION: compose-upload
 // Image uploads: content-addressed, no user_id storage. The server
@@ -1239,6 +1782,9 @@ $('#search-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const q = $('#search-input').value.trim();
   if (!q) { clearFilter(); return; }
+  // `#<id>` is always a post-id jump regardless of which tab is active —
+  // docs use their own `@<pseudonym>`-style mentions but don't have a
+  // short numeric shortcut.
   const idMatch = POST_ID_SEARCH_RE.exec(q);
   if (idMatch) {
     const id = parseInt(idMatch[1], 10);
@@ -1250,7 +1796,9 @@ $('#search-form').addEventListener('submit', async (e) => {
   }
   filterState = { kind: 'search', value: q };
   $('#search-clear').hidden = false;
-  await loadFeed();
+  renderFilterBar();
+  if (feedMode === 'docs') await loadDocs();
+  else await loadFeed();
   showReader(VIEW.EMPTY);
 });
 $('#search-input').addEventListener('input', () => {
@@ -1261,7 +1809,10 @@ $('#search-clear').addEventListener('click', clearFilter);
 // SECTION: compose
 // --- Compose post ---
 
-$('#compose-btn').addEventListener('click', openCompose);
+$('#compose-btn').addEventListener('click', () => {
+  if (feedMode === 'docs') openNewDoc();
+  else openCompose();
+});
 
 function openCompose() {
   const f = $('#post-form');
@@ -1404,8 +1955,11 @@ async function deletePost() {
 async function openThread(id, { pushUrl = true } = {}) {
   currentThread = id;
   currentBulletin = null;
+  currentDoc = null;
   markActiveBulletin(null);
+  markActiveDoc(null);
   markActivePost(id);
+  if (feedMode !== 'posts') setFeedMode('posts');
   if (pushUrl) syncUrl({ kind: 'post', id });
   let data;
   try {
@@ -1500,11 +2054,15 @@ window.addEventListener('popstate', () => {
   if (!route) {
     currentThread = null;
     currentBulletin = null;
+    currentDoc = null;
     markActivePost(null);
     markActiveBulletin(null);
+    markActiveDoc(null);
     showReader(VIEW.EMPTY);
   } else if (route.kind === 'post' && route.id !== currentThread) {
     openThread(route.id, { pushUrl: false }).catch(() => {});
+  } else if (route.kind === 'doc' && route.id !== currentDoc) {
+    openDoc(route.id, { pushUrl: false }).catch(() => {});
   } else if (route.kind === 'bulletin' && route.id !== currentBulletin) {
     openBulletin(route.id, { pushUrl: false }).catch(() => {});
   }

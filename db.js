@@ -185,6 +185,58 @@ CREATE TABLE IF NOT EXISTS bulletins (
 );
 CREATE INDEX IF NOT EXISTS idx_bulletins_created ON bulletins(created_at);
 
+-- Shared docs: wiki-style markdown pages attached to a channel. Unlike
+-- posts, docs are collaboratively editable — anyone holding a valid
+-- posting token can edit. The creator's token_hash is stored so the
+-- creator (while their token is still live) or an admin can delete; it
+-- is nulled out by rotate() when the token expires so the row stops
+-- being a per-author linker. last_editor_pseudonym is a public display
+-- handle only (8-char pseudonym or admin username) — never a token hash.
+-- ON DELETE SET NULL on channel_id mirrors posts: docs survive channel
+-- deletion and fall back to the default channel client-side.
+CREATE TABLE IF NOT EXISTS docs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  channel_id INTEGER REFERENCES channels(id) ON DELETE SET NULL,
+  title TEXT NOT NULL,
+  content TEXT NOT NULL,
+  created_pseudonym TEXT NOT NULL,
+  last_editor_pseudonym TEXT,
+  created_token_hash TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_docs_channel ON docs(channel_id);
+CREATE INDEX IF NOT EXISTS idx_docs_updated ON docs(updated_at);
+
+-- FTS5 over docs title+content. Trigram tokenizer for CJK, matching
+-- the posts_fts setup. Triggers mirror the post FTS lifecycle.
+CREATE VIRTUAL TABLE IF NOT EXISTS docs_fts USING fts5(
+  title, content, content='docs', content_rowid='id', tokenize='trigram'
+);
+CREATE TRIGGER IF NOT EXISTS docs_ai AFTER INSERT ON docs BEGIN
+  INSERT INTO docs_fts(rowid, title, content) VALUES (new.id, new.title, new.content);
+END;
+CREATE TRIGGER IF NOT EXISTS docs_ad AFTER DELETE ON docs BEGIN
+  INSERT INTO docs_fts(docs_fts, rowid, title, content) VALUES ('delete', old.id, old.title, old.content);
+END;
+CREATE TRIGGER IF NOT EXISTS docs_au AFTER UPDATE ON docs BEGIN
+  INSERT INTO docs_fts(docs_fts, rowid, title, content) VALUES ('delete', old.id, old.title, old.content);
+  INSERT INTO docs_fts(rowid, title, content) VALUES (new.id, new.title, new.content);
+END;
+
+-- Same reader-side bookmark model as saved_posts but keyed by doc. The
+-- (user_id, doc_id) row is never joined into read endpoints, so it
+-- can't be used to infer authorship (anyone can save anyone's doc).
+CREATE TABLE IF NOT EXISTS saved_docs (
+  user_id INTEGER NOT NULL,
+  doc_id INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (user_id, doc_id),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (doc_id) REFERENCES docs(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_saved_docs_user ON saved_docs(user_id, created_at);
+
 -- One-shot email verification codes. Keyed by email so sending a new
 -- code for an address replaces any pending one. Stores only the hash
 -- of the 6-digit code; rotate() purges expired rows. Intentionally
@@ -336,6 +388,12 @@ if (db.pragma('user_version', { simple: true }) < 3) {
   seed.run('user@example.com', bcrypt.hashSync('user1234', 12), 0, null, now);
   db.pragma('user_version = 3');
   console.log('[migrate] users reset; seeded admin@example.com + user@example.com (see README for dev passwords)');
+}
+
+// docs_fts was added after some DBs already had rows in `docs`; backfill once.
+if (db.pragma('user_version', { simple: true }) < 4) {
+  db.exec("INSERT INTO docs_fts(docs_fts) VALUES('rebuild')");
+  db.pragma('user_version = 4');
 }
 
 // Assign Admin## display names to any admin that doesn't have one yet.

@@ -72,10 +72,10 @@ user_id is stored anywhere alongside content.
   block in `SECTION: migrations` (see the `parent_id` backfill for the
   shape). Indexes on new columns must be created *after* the ALTER, not
   inside the main `db.exec()`.
-- Deep-link SPA routes (`/p/:id(\d+)`, `/b/:id(\d+)`; grep
-  `SECTION: routes:spa`) serve `public/index.html` unconditionally — they
-  must not check whether the post exists, because that would leak
-  existence to unauthenticated requesters.
+- Deep-link SPA routes (`/p/:id(\d+)`, `/b/:id(\d+)`, `/d/:id(\d+)`;
+  grep `SECTION: routes:spa`) serve `public/index.html` unconditionally
+  — they must not check whether the post/bulletin/doc exists, because
+  that would leak existence to unauthenticated requesters.
 
 ### Client (`public/app.js`)
 
@@ -181,8 +181,8 @@ Grep pattern: "SECTION: token-core"   # or any other name from the map
 
 Files with FILE MAP + inline SECTION markers (as of this writing):
 
-- `server.js` — 21 sections (config → routes → rotate)
-- `public/app.js` — 25 sections (constants → sidebar+init)
+- `server.js` — 22 sections (config → routes → rotate)
+- `public/app.js` — 26 sections (constants → sidebar+init)
 - `db.js` — 6 sections (bootstrap → housekeeping)
 - `public/style/base.css` — theme/body/scrollbar sections
 - `public/style/reader.css`, `sidebar.css`, `layout.css`, `markdown.css` —
@@ -228,12 +228,15 @@ All HTTP routes live in `server.js`, grouped by `SECTION: routes:*`:
 - `routes:posts` — `GET/POST /api/posts`, `GET/DELETE /api/posts/:id`,
   `POST /api/posts/:id/reactions`, `POST/PUT/DELETE /api/posts/:pid/comments[/:id]`
 - `routes:uploads` — `POST/GET /api/uploads[/:name]`
-- `routes:saved` — `GET/POST/DELETE /api/saved/:id`, `GET/POST/DELETE /api/followed/:id`
+- `routes:saved` — `GET/POST/DELETE /api/saved/:id`, `GET/POST/DELETE /api/saved-docs/:id`, `GET/POST/DELETE /api/followed/:id`
 - `routes:channels` — `GET/POST/DELETE /api/channels[/:id]`, `GET/POST /api/channel-prefs`, `GET /api/channel-unread`, `POST /api/channels/:id/seen`
 - `routes:bulletins` — `GET/POST/PUT/DELETE /api/bulletins[/:id]`
+- `routes:docs` — `GET/POST /api/docs`, `GET/PUT/DELETE /api/docs/:id`
+  (wiki-style shared markdown pages; any valid token can edit, delete is
+  creator-or-admin, `created_token_hash` orphaned by rotate like posts)
 - `routes:search` — `GET /api/search`
 - `routes:mentions` — `POST /api/mentions`, `GET /api/feed.xml`
-- `routes:spa` — `GET /p/:id /b/:id` (deep-link catchalls; must stay oblivious)
+- `routes:spa` — `GET /p/:id /b/:id /d/:id` (deep-link catchalls; must stay oblivious)
 
 ### Client-side state index
 

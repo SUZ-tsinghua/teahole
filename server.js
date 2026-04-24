@@ -17,9 +17,10 @@
 //   SECTION: routes:saved      saved-posts + followed-posts
 //   SECTION: routes:channels   channel admin + per-user prefs
 //   SECTION: routes:bulletins  bulletin CRUD
+//   SECTION: routes:docs       shared-doc CRUD (wiki-style)
 //   SECTION: routes:search     /api/search (FTS5)
 //   SECTION: routes:mentions   /api/mentions + /api/feed.xml
-//   SECTION: routes:spa        /p/:id /b/:id deep-link catchalls
+//   SECTION: routes:spa        /p/:id /b/:id /d/:id deep-link catchalls
 //   SECTION: rotate+listen     10-min token sweep + app.listen
 // ────────────────────────────────────────────────────────────────────────────
 
@@ -359,6 +360,23 @@ const Q = {
      WHERE comments_fts MATCH ? AND p.deleted_at IS NULL
      ORDER BY rank LIMIT ${SEARCH_LIMIT * 2}`
   ),
+  // Short-query fallbacks — mirror docs' instr() approach. Ranked by
+  // recency since FTS rank isn't available. lower()ed on both sides so
+  // ASCII is case-insensitive without affecting CJK (lower() is a no-op
+  // on non-ASCII in SQLite by default).
+  searchPostsLike: db.prepare(
+    `SELECT id FROM posts
+     WHERE deleted_at IS NULL
+       AND (instr(lower(title), lower(?)) > 0
+         OR instr(lower(content), lower(?)) > 0)
+     ORDER BY created_at DESC LIMIT ${SEARCH_LIMIT * 2}`
+  ),
+  searchPostsByCommentLike: db.prepare(
+    `SELECT DISTINCT c.post_id AS id FROM comments c
+     JOIN posts p ON p.id = c.post_id
+     WHERE p.deleted_at IS NULL AND instr(lower(c.content), lower(?)) > 0
+     ORDER BY p.created_at DESC LIMIT ${SEARCH_LIMIT * 2}`
+  ),
   listChannels:    db.prepare(
     `SELECT c.id, c.slug, c.name, c.description, c.created_at,
             (SELECT COUNT(*) FROM posts p WHERE p.channel_id = c.id AND p.deleted_at IS NULL) AS post_count
@@ -433,6 +451,75 @@ const Q = {
      WHERE fp.user_id = ? AND p.deleted_at IS NULL
      ORDER BY unread DESC, fp.followed_at DESC
      LIMIT ${FEED_LIMIT}`
+  ),
+  // Shared docs. Wiki-style: created_token_hash gates delete-by-creator
+//  only, never edit — any valid posting token can edit. rotate() nulls
+//  out the hash once the token expires, matching the post tombstone flow.
+  listDocs:         db.prepare(
+    `SELECT id, channel_id, title, created_pseudonym, last_editor_pseudonym,
+            created_at, updated_at
+     FROM docs ORDER BY COALESCE(updated_at, created_at) DESC LIMIT ${FEED_LIMIT}`
+  ),
+  listDocsByChannel: db.prepare(
+    `SELECT id, channel_id, title, created_pseudonym, last_editor_pseudonym,
+            created_at, updated_at
+     FROM docs WHERE channel_id = ?
+     ORDER BY COALESCE(updated_at, created_at) DESC LIMIT ${FEED_LIMIT}`
+  ),
+  getDoc:           db.prepare(
+    `SELECT id, channel_id, title, content, created_pseudonym,
+            last_editor_pseudonym, created_token_hash, created_at, updated_at
+     FROM docs WHERE id = ?`
+  ),
+  insertDoc:        db.prepare(
+    `INSERT INTO docs (channel_id, title, content, created_pseudonym,
+                       last_editor_pseudonym, created_token_hash, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
+  ),
+  // Optimistic lock: caller passes the version they based their edit on
+//  (COALESCE(updated_at, created_at) at fetch time). If another write
+//  has happened since, the WHERE fails and we return 409 upstream.
+  updateDoc:        db.prepare(
+    `UPDATE docs SET title = ?, content = ?, last_editor_pseudonym = ?, updated_at = ?
+     WHERE id = ? AND COALESCE(updated_at, created_at) = ?`
+  ),
+  deleteDoc:        db.prepare('DELETE FROM docs WHERE id = ?'),
+  deleteOwnDoc:     db.prepare(
+    'DELETE FROM docs WHERE id = ? AND created_token_hash IS NOT NULL AND created_token_hash = ?'
+  ),
+  orphanDocHashes:  db.prepare(
+    `UPDATE docs SET created_token_hash = NULL
+     WHERE created_token_hash IS NOT NULL
+       AND created_token_hash NOT IN (SELECT token_hash FROM post_tokens)`
+  ),
+  docExists:        db.prepare('SELECT 1 FROM docs WHERE id = ?'),
+  searchDocs:       db.prepare(
+    `SELECT d.id, d.channel_id, d.title, d.created_pseudonym, d.last_editor_pseudonym,
+            d.created_at, d.updated_at, bm25(docs_fts) AS rank
+     FROM docs_fts JOIN docs d ON d.id = docs_fts.rowid
+     WHERE docs_fts MATCH ?
+     ORDER BY rank LIMIT ${SEARCH_LIMIT}`
+  ),
+  // Short queries (<3 chars) can't produce trigrams, so FTS returns
+  // nothing for common 2-char CJK terms like "面试". Fall back to a
+  // literal substring scan — lower()ed on both sides to make ASCII
+  // case-insensitive (SQLite's lower() is a no-op on CJK).
+  searchDocsLike:   db.prepare(
+    `SELECT id, channel_id, title, created_pseudonym, last_editor_pseudonym,
+            created_at, updated_at
+     FROM docs
+     WHERE instr(lower(title), lower(?)) > 0
+        OR instr(lower(content), lower(?)) > 0
+     ORDER BY COALESCE(updated_at, created_at) DESC LIMIT ${SEARCH_LIMIT}`
+  ),
+  insertSavedDoc:   db.prepare('INSERT OR IGNORE INTO saved_docs (user_id, doc_id, created_at) VALUES (?, ?, ?)'),
+  deleteSavedDoc:   db.prepare('DELETE FROM saved_docs WHERE user_id = ? AND doc_id = ?'),
+  listSavedDocIds:  db.prepare('SELECT doc_id FROM saved_docs WHERE user_id = ? ORDER BY created_at DESC'),
+  listSavedDocs:    db.prepare(
+    `SELECT d.id, d.channel_id, d.title, d.created_pseudonym, d.last_editor_pseudonym,
+            d.created_at, d.updated_at
+     FROM saved_docs s JOIN docs d ON d.id = s.doc_id
+     WHERE s.user_id = ? ORDER BY s.created_at DESC LIMIT ${FEED_LIMIT}`
   ),
   findEmailCode:   db.prepare('SELECT code_hash, expires_at, attempts, created_at FROM email_codes WHERE email = ?'),
   upsertEmailCode: db.prepare(
@@ -652,6 +739,18 @@ function sanitizeFtsQuery(q) {
   const cleaned = q.replace(/["()*:^~+\\-]/g, ' ').replace(/\s+/g, ' ').trim();
   if (cleaned.length < SEARCH_MIN_CHARS || cleaned.length > 200) return null;
   return cleaned;
+}
+
+// Pick the right search implementation for a raw query. Trigram FTS
+// needs 3+ chars to produce any grams, so shorter queries (including
+// 2-char CJK terms like "面试") fall back to a literal substring scan.
+// Returns { error } | { mode: 'like', term } | { mode: 'fts', term }.
+function pickSearchStrategy(raw) {
+  const s = typeof raw === 'string' ? raw.trim() : '';
+  if (!s || s.length > 200) return { error: '搜索词不能为空或过长' };
+  if (s.length < SEARCH_MIN_CHARS) return { mode: 'like', term: s };
+  const q = sanitizeFtsQuery(s);
+  return q ? { mode: 'fts', term: q } : { error: '搜索词无效' };
 }
 
 function issueSession(res, userId, username, isAdmin) {
@@ -1118,6 +1217,28 @@ app.delete('/api/saved/:id', requireSession, (req, res) => {
   res.json({ ok: true, saved: false });
 });
 
+// Docs bookmarks. Same reader-side model as saved_posts — (user_id,
+// doc_id) is never read by any content endpoint, so saving a doc
+// doesn't leak anything about who edits it.
+app.get('/api/saved-docs', requireSession, (req, res) => {
+  const ids = Q.listSavedDocIds.all(req.user.uid).map((r) => r.doc_id);
+  const docs = Q.listSavedDocs.all(req.user.uid);
+  res.json({ ids, docs });
+});
+
+app.post('/api/saved-docs/:id', requireSession, (req, res) => {
+  const id = parseId(req, res); if (id == null) return;
+  if (!Q.docExists.get(id)) return res.status(404).json({ error: '未找到' });
+  Q.insertSavedDoc.run(req.user.uid, id, Date.now());
+  res.json({ ok: true, saved: true });
+});
+
+app.delete('/api/saved-docs/:id', requireSession, (req, res) => {
+  const id = parseId(req, res); if (id == null) return;
+  Q.deleteSavedDoc.run(req.user.uid, id);
+  res.json({ ok: true, saved: false });
+});
+
 // Followed threads: account-scoped reader state. POST both subscribes
 // and marks-as-read — the server just records the current max comment
 // id as the last-seen anchor, so the next GET returns unread counts
@@ -1267,33 +1388,177 @@ app.delete('/api/bulletins/:id', requireSession, requireAdmin, (req, res) => {
   res.json({ ok: true });
 });
 
-// FTS5 search over post title+content. Trigram tokenizer = minimum 3 chars.
-// SECTION: routes:search
-app.get('/api/search', requireSession, (req, res) => {
-  const q = sanitizeFtsQuery(req.query.q);
-  if (!q) {
-    return res.status(400).json({
-      error: `搜索词需为 ${SEARCH_MIN_CHARS} 位及以上`,
+// Shared docs: wiki-style markdown pages. Any logged-in user with a
+// valid posting token can create or edit; admins and the original
+// creator (while their token is live) can delete. See CLAUDE.md
+// "Privacy model" — we store created_token_hash purely as a delete gate
+// and rotate() nulls it out when the token expires.
+// SECTION: routes:docs
+function mapDocRow(r) {
+  return {
+    id: r.id,
+    channel_id: r.channel_id,
+    title: r.title,
+    created_pseudonym: r.created_pseudonym,
+    last_editor_pseudonym: r.last_editor_pseudonym,
+    created_at: r.created_at,
+    updated_at: r.updated_at,
+  };
+}
+
+// Strip the internal created_token_hash before shipping a full doc row
+// to the client — that hash is the delete-gate fingerprint and must
+// never leave the server.
+function mapDocFull(row) {
+  const { created_token_hash, ...safe } = row;
+  return safe;
+}
+
+app.get('/api/docs', requireSession, (req, res) => {
+  let rows;
+  const qParam = req.query.q;
+  const chParam = req.query.channel;
+  if (qParam != null) {
+    const s = pickSearchStrategy(qParam);
+    if (s.error) return res.status(400).json({ error: s.error });
+    rows = s.mode === 'like'
+      ? Q.searchDocsLike.all(s.term, s.term)
+      : Q.searchDocs.all(s.term);
+  } else if (chParam != null) {
+    const slug = sanitizeChannelSlug(chParam);
+    if (!slug) return res.status(400).json({ error: '无效的频道' });
+    const ch = Q.getChannelBySlug.get(slug);
+    if (!ch) return res.status(404).json({ error: '频道不存在' });
+    rows = Q.listDocsByChannel.all(ch.id);
+  } else {
+    rows = Q.listDocs.all();
+  }
+  res.json(rows.map(mapDocRow));
+});
+
+app.get('/api/docs/:id', requireSession, (req, res) => {
+  const id = parseId(req, res); if (id == null) return;
+  const row = Q.getDoc.get(id);
+  if (!row) return res.status(404).json({ error: '未找到' });
+  res.json(mapDocFull(row));
+});
+
+app.post('/api/docs', requireSession, (req, res) => {
+  const { token, title, content, channel_id } = req.body || {};
+  const resolved = resolveToken(token);
+  if (!resolved) return res.status(401).json({ error: '发帖令牌无效或已过期' });
+  const publicHandle = publicHandleFor(req.user, resolved.authorKey);
+  const t = sanitizeText(title, 200);
+  const c = sanitizeText(content, 20000);
+  if (!t || !c) return res.status(400).json({ error: '标题和内容不能为空' });
+  const ch = resolveChannelInput(channel_id);
+  if (!ch.ok) return res.status(400).json({ error: ch.error });
+
+  const createdAt = Date.now();
+  const info = Q.insertDoc.run(
+    ch.channelId, t, c, publicHandle, publicHandle, resolved.tokenHash, createdAt
+  );
+  res.json({
+    id: info.lastInsertRowid,
+    channel_id: ch.channelId,
+    title: t,
+    content: c,
+    created_pseudonym: publicHandle,
+    last_editor_pseudonym: publicHandle,
+    created_at: createdAt,
+    updated_at: null,
+  });
+});
+
+app.put('/api/docs/:id', requireSession, (req, res) => {
+  const id = parseId(req, res); if (id == null) return;
+  const { token, title, content, expected_version } = req.body || {};
+  const resolved = resolveToken(token);
+  if (!resolved) return res.status(401).json({ error: '发帖令牌无效或已过期' });
+  const publicHandle = publicHandleFor(req.user, resolved.authorKey);
+  const t = sanitizeText(title, 200);
+  const c = sanitizeText(content, 20000);
+  if (!t || !c) return res.status(400).json({ error: '标题和内容不能为空' });
+  if (!Number.isFinite(expected_version)) {
+    return res.status(400).json({ error: '缺少版本信息' });
+  }
+  const current = Q.getDoc.get(id);
+  if (!current) return res.status(404).json({ error: '未找到' });
+
+  // Force strict monotonicity — if two saves land in the same
+  // millisecond the raw `Date.now()` would collide with the previous
+  // `updated_at`, letting a stale client squeak through the next check.
+  const prior = current.updated_at || current.created_at || 0;
+  const updatedAt = Math.max(Date.now(), prior + 1);
+  const info = Q.updateDoc.run(t, c, publicHandle, updatedAt, id, expected_version);
+  if (info.changes === 0) {
+    // Version mismatch — someone else saved between this client's fetch
+    // and its save. Return the current server state so the client can
+    // show the live content alongside the user's in-progress draft.
+    return res.status(409).json({
+      error: '有人在你之前编辑了这份文档',
+      latest: mapDocFull(current),
     });
   }
-  // Combine post-FTS + comment-FTS hits in JS (bm25 can't be used through
-  // a CTE with aggregation, so we union here). Best (lowest) rank wins;
-  // each row carries flags for which source(s) matched.
-  const byId = new Map();
-  for (const r of Q.searchPostsByPost.all(q)) {
-    byId.set(r.id, { id: r.id, rank: r.rank, in_post: 1, in_comment: 0 });
+  res.json(mapDocFull(Q.getDoc.get(id)));
+});
+
+app.delete('/api/docs/:id', requireSession, (req, res) => {
+  const id = parseId(req, res); if (id == null) return;
+  const { token } = req.body || {};
+  if (isLiveAdmin(req.user.uid)) {
+    const info = Q.deleteDoc.run(id);
+    if (info.changes === 0) return res.status(404).json({ error: '未找到' });
+    return res.json({ ok: true });
   }
-  for (const r of Q.searchPostsByComment.all(q)) {
-    const cur = byId.get(r.id);
-    if (cur) {
-      cur.in_comment = 1;
-      if (r.rank < cur.rank) cur.rank = r.rank;
-    } else {
-      byId.set(r.id, { id: r.id, rank: r.rank, in_post: 0, in_comment: 1 });
+  const resolved = resolveToken(token);
+  if (!resolved) return res.status(401).json({ error: '发帖令牌无效或已过期' });
+  const info = Q.deleteOwnDoc.run(id, resolved.tokenHash);
+  if (info.changes === 0) {
+    const existed = Q.docExists.get(id);
+    return res.status(existed ? 403 : 404).json({ error: existed ? '只有创建者或管理员可以删除' : '未找到' });
+  }
+  res.json({ ok: true });
+});
+
+// Search over posts + comments. FTS5 trigram for 3+ chars; shorter
+// queries fall back to instr() substring scan so 2-char CJK terms like
+// "你好" still work (trigram index can't produce trigrams from <3 chars).
+// SECTION: routes:search
+app.get('/api/search', requireSession, (req, res) => {
+  const s = pickSearchStrategy(req.query.q);
+  if (s.error) return res.status(400).json({ error: s.error });
+
+  // Each row: { id, rank?, in_post, in_comment }. FTS path sets rank,
+  // LIKE path leaves it undefined and we sort by recency instead.
+  const byId = new Map();
+  if (s.mode === 'like') {
+    for (const r of Q.searchPostsLike.all(s.term, s.term)) {
+      byId.set(r.id, { id: r.id, in_post: 1, in_comment: 0 });
+    }
+    for (const r of Q.searchPostsByCommentLike.all(s.term)) {
+      const cur = byId.get(r.id);
+      if (cur) cur.in_comment = 1;
+      else byId.set(r.id, { id: r.id, in_post: 0, in_comment: 1 });
+    }
+  } else {
+    for (const r of Q.searchPostsByPost.all(s.term)) {
+      byId.set(r.id, { id: r.id, rank: r.rank, in_post: 1, in_comment: 0 });
+    }
+    for (const r of Q.searchPostsByComment.all(s.term)) {
+      const cur = byId.get(r.id);
+      if (cur) {
+        cur.in_comment = 1;
+        if (r.rank < cur.rank) cur.rank = r.rank;
+      } else {
+        byId.set(r.id, { id: r.id, rank: r.rank, in_post: 0, in_comment: 1 });
+      }
     }
   }
   if (!byId.size) return res.json([]);
-  const ordered = [...byId.values()].sort((a, b) => a.rank - b.rank).slice(0, SEARCH_LIMIT);
+  const ordered = [...byId.values()]
+    .sort((a, b) => (a.rank ?? Infinity) - (b.rank ?? Infinity))
+    .slice(0, SEARCH_LIMIT);
   const ids = ordered.map((r) => r.id);
   const placeholders = ids.map(() => '?').join(',');
   const rows = db.prepare(
@@ -1380,6 +1645,11 @@ app.get('/b/:id(\\d+)', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
+// Docs deep-link — same existence-oblivious rule as /p and /b.
+app.get('/d/:id(\\d+)', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
 // Purges expired token hashes, orphan author-edit fingerprints on posts
 // and comments, and stale mention pointers. Nothing here is keyed by
 // user_id, so this sweep plus the calendar boundary is what makes old
@@ -1391,14 +1661,15 @@ function rotate() {
   const t = Q.purgeTokens.run(now);
   const ph = Q.orphanPostHashes.run();
   const ch = Q.orphanCmtHashes.run();
+  const dh = Q.orphanDocHashes.run();
   const m = Q.purgeMentions.run(mentionCutoff);
   const r = Q.purgeRevoked.run(now);
   const e = Q.purgeEmailCodes.run(now);
-  if (t.changes + m.changes + ph.changes + ch.changes + r.changes + e.changes > 0) {
+  if (t.changes + m.changes + ph.changes + ch.changes + dh.changes + r.changes + e.changes > 0) {
     console.log(
       `[rotate] purged ${t.changes} tokens, ${m.changes} mentions, ` +
       `${r.changes} revoked sessions, ${e.changes} email codes, ` +
-      `orphaned ${ph.changes} post / ${ch.changes} comment hashes`
+      `orphaned ${ph.changes} post / ${ch.changes} comment / ${dh.changes} doc hashes`
     );
   }
 }

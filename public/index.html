@@ -3,7 +3,7 @@
   FILE MAP — grep "SECTION:" to jump.
     SECTION: header       top-bar (brand + theme toggle + userbar)
     SECTION: auth-view    login / register form (hidden when logged in)
-    SECTION: forum-view   main app: sidebar + reader pane
+    SECTION: forum-view   main app: sidebar + reader pane (feed/thread/bulletin/doc/compose)
     SECTION: dialogs      token / confirm-rotate / channel / bulletin / help /
                           followed / mentions  (hidden by default, toggled via app.js)
 -->
@@ -124,9 +124,14 @@
       <div id="empty-view" class="feed-pane">
         <div class="feed-pane-head">
           <h2 id="feed-label">动态</h2>
+          <div id="feed-tabs" class="feed-tabs" role="tablist">
+            <button type="button" class="feed-tab is-active" role="tab" data-mode="posts">动态</button>
+            <button type="button" class="feed-tab" role="tab" data-mode="docs">共享文档</button>
+          </div>
           <div id="filter-bar" class="filter-bar" hidden></div>
         </div>
         <div id="feed" class="feed feed-grid"></div>
+        <div id="docs-feed" class="feed docs-feed" hidden></div>
       </div>
 
       <article id="thread-view" class="reader-card" hidden>
@@ -155,6 +160,31 @@
         <div id="bulletin-meta" class="meta"></div>
         <div id="bulletin-body" class="prose"></div>
         <div id="bulletin-actions" class="thread-actions" hidden></div>
+      </article>
+
+      <article id="doc-view" class="reader-card" hidden>
+        <button class="back" data-close="reader">← 返回</button>
+        <div class="doc-badge">共享文档</div>
+        <h2 id="doc-title" class="doc-title"></h2>
+        <input id="doc-title-input" class="doc-title-input" type="text" maxlength="200" placeholder="标题（如：PhD 申请指南）" hidden>
+        <div id="doc-meta" class="meta"></div>
+        <div id="doc-channel" class="thread-channel" hidden></div>
+        <label id="doc-channel-picker" class="field-row doc-channel-picker" hidden>
+          <span class="field-label">频道</span>
+          <select id="doc-channel-select"></select>
+        </label>
+        <div id="doc-body" class="prose"></div>
+        <div id="doc-editor" class="doc-editor" hidden>
+          <textarea id="doc-editor-input" placeholder="支持 Markdown、代码块、$LaTeX$ 公式..." maxlength="20000"></textarea>
+          <div id="doc-editor-preview" class="prose doc-preview"></div>
+        </div>
+        <div id="doc-editor-toolbar" class="compose-toolbar doc-editor-toolbar" hidden>
+          <button type="button" id="doc-image-btn" class="ghost small">📷 插入图片</button>
+          <span id="doc-image-status" class="muted compose-hint"></span>
+          <span class="muted doc-editor-hint">左侧编辑，右侧实时预览</span>
+        </div>
+        <div id="doc-actions" class="thread-actions" hidden></div>
+        <div class="err" id="doc-err"></div>
       </article>
 
       <article id="compose-view" class="reader-card" hidden>
