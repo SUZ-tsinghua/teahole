@@ -112,14 +112,29 @@ if (!process.env.JWT_SECRET) {
   console.warn('[warn] JWT_SECRET not set — generated a random one. Sessions will not survive restart.');
 }
 
-allowedEmailHashes = loadAllowlist(DEPT_ALLOWLIST_FILE);
-if (allowedEmailHashes === null) {
-  console.warn(
-    `[warn] allowlist file ${DEPT_ALLOWLIST_FILE} not found — registration is disabled until it exists.`
-  );
-} else {
-  console.log(`[allowlist] loaded ${allowedEmailHashes.size} entries from ${DEPT_ALLOWLIST_FILE}`);
+function reloadAllowlist(reason) {
+  try {
+    const next = loadAllowlist(DEPT_ALLOWLIST_FILE);
+    allowedEmailHashes = next;
+    if (next === null) {
+      console.warn(`[allowlist] ${reason}: file missing — registration disabled until it exists.`);
+    } else {
+      console.log(`[allowlist] ${reason}: loaded ${next.size} entries from ${DEPT_ALLOWLIST_FILE}`);
+    }
+  } catch (e) {
+    console.error(`[allowlist] ${reason}: reload failed (${e.message}); keeping previous roster.`);
+  }
 }
+
+reloadAllowlist('startup');
+
+// Watch the allowlist file so edits take effect without a restart.
+// fs.watchFile polls via stat() — less efficient than fs.watch but
+// survives atomic-save editors (vim, gofmt, etc.) that rename the file.
+fs.watchFile(DEPT_ALLOWLIST_FILE, { interval: 2000 }, (curr, prev) => {
+  if (curr.mtimeMs === prev.mtimeMs && curr.ino === prev.ino) return;
+  reloadAllowlist('watch');
+});
 
 const app = express();
 
