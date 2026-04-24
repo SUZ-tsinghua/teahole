@@ -1,3 +1,19 @@
+// ────────────────────────────────────────────────────────────────────────────
+// FILE MAP — grep "SECTION:" to jump.
+//
+//   SECTION: bootstrap      Database handle + WAL + FK pragmas
+//   SECTION: schema         CREATE TABLE / CREATE INDEX (content + reader-side)
+//   SECTION: drops          One-shot cleanups for removed features
+//   SECTION: migrations     ALTER TABLE ADD COLUMN + post-alter indexes
+//   SECTION: seeds          Default channel + dev user reset (user_version gate)
+//   SECTION: housekeeping   NOCASE username index, admin display-name backfill
+//
+// When adding a column: update the CREATE TABLE block AND add an ALTER block
+// in SECTION: migrations. When adding a table keyed by token_hash: FK into
+// post_tokens(token_hash) ON DELETE CASCADE (see CLAUDE.md "Privacy model").
+// ────────────────────────────────────────────────────────────────────────────
+
+// SECTION: bootstrap
 const Database = require('better-sqlite3');
 const path = require('path');
 
@@ -6,6 +22,7 @@ const db = new Database(path.join(DATA_DIR, 'data.db'));
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 
+// SECTION: schema
 db.exec(`
 CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -209,12 +226,14 @@ CREATE TRIGGER IF NOT EXISTS comments_au AFTER UPDATE ON comments BEGIN
 END;
 `);
 
+// SECTION: drops
 // One-shot drop for the removed tag feature: any pre-existing DB still
 // has post_tags around. Drop it (and its index) here so stale rows
 // don't keep referencing posts.
 db.exec('DROP INDEX IF EXISTS idx_post_tags_tag');
 db.exec('DROP TABLE IF EXISTS post_tags');
 
+// SECTION: migrations
 // Column-level migrations for pre-existing databases. CREATE TABLE above
 // is a no-op when the table already exists, so new columns have to come
 // in via ALTER. Indexes on new columns must be created AFTER the ALTER.
@@ -263,6 +282,7 @@ if (prefCols.length && !prefCols.includes('last_seen_at')) {
   db.exec('ALTER TABLE user_channel_prefs ADD COLUMN last_seen_at INTEGER');
 }
 
+// SECTION: seeds
 const channelCount = db.prepare('SELECT count(*) AS n FROM channels').get().n;
 if (channelCount === 0) {
   db.prepare(
@@ -284,6 +304,7 @@ if (userVersion < 2) {
   db.pragma('user_version = 2');
 }
 
+// SECTION: housekeeping
 // Case-insensitive username uniqueness. Prevents `Alice` and `alice` from
 // both registering. Will fail to create if a pre-existing DB already has
 // case-variant duplicates — we log and move on rather than crash.

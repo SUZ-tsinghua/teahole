@@ -1,3 +1,28 @@
+// ────────────────────────────────────────────────────────────────────────────
+// FILE MAP — grep "SECTION:" to jump. Keep in sync when adding large blocks.
+//
+//   SECTION: config            env vars, limits, session-cookie options
+//   SECTION: mail+allowlist    SMTP transport + dept allowlist reload
+//   SECTION: express-setup     CSP, middleware, static, /healthz
+//   SECTION: sql-helpers       qualify / authorKeySql / postPreviewSql
+//   SECTION: Q                 all prepared statements (add queries HERE)
+//   SECTION: derivations       reactionCountsFor, mapPostPreview, quotaFor
+//   SECTION: auth-helpers      rateLimit, requireSession, requireAdmin
+//   SECTION: validation        sanitizeText, parseEmail, validatePassword
+//   SECTION: token-core        resolveToken — single path from token→pseudonym
+//   SECTION: routes:auth       /api/send-code /register /login /logout /me
+//   SECTION: routes:token      /api/token (mint posting token + quota)
+//   SECTION: routes:posts      CRUD, reactions, comments
+//   SECTION: routes:uploads    image upload + serve
+//   SECTION: routes:saved      saved-posts + followed-posts
+//   SECTION: routes:channels   channel admin + per-user prefs
+//   SECTION: routes:bulletins  bulletin CRUD
+//   SECTION: routes:search     /api/search (FTS5)
+//   SECTION: routes:mentions   /api/mentions + /api/feed.xml
+//   SECTION: routes:spa        /p/:id /b/:id deep-link catchalls
+//   SECTION: rotate+listen     10-min token sweep + app.listen
+// ────────────────────────────────────────────────────────────────────────────
+
 const express = require('express');
 const cookieParser = require('cookie-parser');
 const bcrypt = require('bcrypt');
@@ -9,12 +34,15 @@ const multer = require('multer');
 const sharp = require('sharp');
 const db = require('./db');
 
+// SECTION: config
+
 const EMAIL_CODE_TTL_MS = 10 * 60 * 1000;
 const EMAIL_CODE_MAX_ATTEMPTS = 5;
 const DATA_DIR = process.env.DATA_DIR || __dirname;
 const DEPT_ALLOWLIST_FILE =
   process.env.DEPT_ALLOWLIST_FILE || path.join(DATA_DIR, 'dept-allowlist.txt');
 
+// SECTION: mail+allowlist
 // With no GMAIL_USER / GMAIL_APP_PASSWORD we log the code instead of sending
 // — keeps the local dev flow unblocked without a real mail account.
 let mailTransport = null;
@@ -142,6 +170,7 @@ fs.watchFile(DEPT_ALLOWLIST_FILE, { interval: 2000 }, (curr, prev) => {
   reloadAllowlist('watch');
 });
 
+// SECTION: express-setup
 const app = express();
 
 // TRUST_PROXY=1 (or a CIDR list) if the server runs behind a reverse proxy
@@ -179,6 +208,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 // touch the DB, so a stuck SQLite write doesn't cause rolling restarts.
 app.get('/healthz', (req, res) => res.type('text/plain').send('ok'));
 
+// SECTION: sql-helpers
 function qualify(alias, col) {
   return alias ? `${alias}.${col}` : col;
 }
@@ -204,6 +234,7 @@ function postPreviewSql(alias = '') {
           ${createdAt}, ${editedAt}, ${channelId}`;
 }
 
+// SECTION: Q — prepared statements. Add new queries here, never inline.
 const Q = {
   findUserByName:  db.prepare('SELECT id, username, password_hash, is_admin, display_name FROM users WHERE username = ? COLLATE NOCASE'),
   usernameExists:  db.prepare('SELECT 1 FROM users WHERE username = ? COLLATE NOCASE'),
@@ -418,6 +449,7 @@ const Q = {
   purgeEmailCodes: db.prepare('DELETE FROM email_codes WHERE expires_at < ?'),
 };
 
+// SECTION: derivations
 const REACTION_KINDS = ['👍', '❤️', '😂', '😮', '😢', '🎉'];
 const REACTION_KIND_SET = new Set(REACTION_KINDS);
 const PSEUDONYM_RE = /^[a-f0-9]{8}$/;
@@ -511,6 +543,7 @@ function todayUTC() { return new Date().toISOString().slice(0, 10); }
 // Simple in-memory rate limiter keyed by (endpoint, ip). Lazy eviction on
 // read plus a periodic sweep bound memory. Not distributed — for multiple
 // processes, front with a proxy that rate-limits.
+// SECTION: auth-helpers
 const RATE_WINDOW_MS = 60 * 1000;
 const rateBuckets = new Map();
 
@@ -574,6 +607,7 @@ function parseId(req, res, key = 'id') {
   return id;
 }
 
+// SECTION: validation
 const EMAIL_RE = /^[^\s@]{1,64}@[^\s@]{1,255}\.[^\s@]{1,24}$/;
 
 function parseEmail(raw) {
@@ -628,6 +662,9 @@ function issueSession(res, userId, username, isAdmin) {
   res.cookie('session', token, SESSION_COOKIE_OPTS);
 }
 
+// SECTION: token-core — the single path from plaintext token → pseudonym.
+// Every write endpoint MUST go through resolveToken; never trust client-supplied
+// pseudonyms. See CLAUDE.md "Privacy model".
 function resolveToken(token) {
   if (typeof token !== 'string' || !/^[0-9a-f]{64}$/.test(token)) return null;
   const tokenHash = hashToken(token);
@@ -664,6 +701,7 @@ const clearMentionsForComment = db.prepare(
 // already-registered, and throttle checks run in the background so the
 // response is opaque — otherwise an attacker could enumerate the
 // department roster by probing this endpoint.
+// SECTION: routes:auth
 app.post('/api/send-code', rateLimit('send-code', 5), (req, res) => {
   const { email, error } = parseEmail(req.body && req.body.email);
   if (error) return res.status(400).json({ error });
@@ -799,6 +837,7 @@ app.get('/api/me', requireSession, (req, res) => {
 // The only endpoint that knows who you are. It spends one of your daily
 // slots and returns a fresh random token. The server stores only
 // sha256(token) + expiry — never a link back to your user id.
+// SECTION: routes:token
 app.post('/api/token', requireSession, (req, res) => {
   const claim = claimTokenSlotTx(req.user.uid, todayUTC());
   if (!claim.ok) return res.status(429).json({ error: claim.reason });
@@ -822,6 +861,7 @@ app.post('/api/token', requireSession, (req, res) => {
 });
 
 // Feed. Supports optional ?channel=<slug> filter.
+// SECTION: routes:posts
 app.get('/api/posts', requireSession, (req, res) => {
   let rows;
   const chParam = req.query.channel;
@@ -1009,6 +1049,7 @@ app.delete('/api/posts/:pid/comments/:id', requireSession, (req, res) => {
 // payload, which strips EXIF and any other embedded metadata along the
 // way. The caller still needs a valid posting token (or admin session)
 // so random session holders can't silently park files in the bucket.
+// SECTION: routes:uploads
 app.post('/api/uploads', requireSession, (req, res) => {
   uploadMiddleware.single('image')(req, res, async (err) => {
     if (err) {
@@ -1020,15 +1061,20 @@ app.post('/api/uploads', requireSession, (req, res) => {
     const admin = isLiveAdmin(req.user.uid);
     if (!resolved && !admin) return res.status(401).json({ error: '发帖令牌无效或已过期' });
     if (!req.file) return res.status(400).json({ error: '没有图片' });
-    const ext = UPLOAD_EXT_FOR_MIME[req.file.mimetype];
-    if (!ext) return res.status(400).json({ error: '只支持 JPG / PNG / WebP' });
+    const inExt = UPLOAD_EXT_FOR_MIME[req.file.mimetype];
+    if (!inExt) return res.status(400).json({ error: '只支持 JPG / PNG / WebP' });
     try {
-      const pipeline = sharp(req.file.buffer, { failOn: 'error' }).rotate();
-      const out = ext === 'png' ? await pipeline.png().toBuffer()
-                : ext === 'webp' ? await pipeline.webp().toBuffer()
-                : await pipeline.jpeg({ quality: 88, mozjpeg: true }).toBuffer();
+      const pipeline = sharp(req.file.buffer, { failOn: 'error' })
+        .rotate()
+        .resize({ width: 1600, withoutEnlargement: true });
+      // PNG stays PNG to preserve transparency / lossless intent; JPEG & WebP
+      // both emit WebP for ~25–40% smaller files at visually equivalent quality.
+      const outExt = inExt === 'png' ? 'png' : 'webp';
+      const out = outExt === 'png'
+        ? await pipeline.png().toBuffer()
+        : await pipeline.webp({ quality: 82 }).toBuffer();
       const hash = crypto.createHash('sha256').update(out).digest('hex');
-      const fileName = `${hash}.${ext}`;
+      const fileName = `${hash}.${outExt}`;
       const filePath = path.join(UPLOAD_DIR, fileName);
       if (!fs.existsSync(filePath)) fs.writeFileSync(filePath, out);
       res.json({ url: `/api/uploads/${fileName}` });
@@ -1050,6 +1096,7 @@ app.get('/api/uploads/:name', requireSession, (req, res) => {
 // Saved posts: reader-side bookmarks bound to the account, not the
 // posting token. Kept in its own endpoint so feed/thread reads never
 // pick up per-user state — callers ask explicitly for their saves.
+// SECTION: routes:saved
 app.get('/api/saved', requireSession, (req, res) => {
   const ids = Q.listSavedIds.all(req.user.uid).map((r) => r.post_id);
   const posts = Q.listSavedPosts.all(req.user.uid).map(mapPostPreview);
@@ -1100,6 +1147,7 @@ app.delete('/api/followed/:id', requireSession, (req, res) => {
 // Per-user channel prefs: pinned + muted + last-seen. Reader-side
 // only; never joined into feed/thread responses. Client fetches once
 // on login, then re-fetches unread counts alongside the mention poll.
+// SECTION: routes:channels
 app.get('/api/channel-prefs', requireSession, (req, res) => {
   res.json(Q.listChannelPrefs.all(req.user.uid));
 });
@@ -1173,6 +1221,7 @@ app.delete('/api/channels/:id', requireSession, requireAdmin, (req, res) => {
 // Bulletins: admin-curated notices. Any logged-in user can read; only
 // live admins can create/edit/delete. Kept separate from `posts` so the
 // anonymous-post privacy rules don't have to be reasoned about here.
+// SECTION: routes:bulletins
 app.get('/api/bulletins', requireSession, (req, res) => {
   res.json(Q.listBulletins.all());
 });
@@ -1219,6 +1268,7 @@ app.delete('/api/bulletins/:id', requireSession, requireAdmin, (req, res) => {
 });
 
 // FTS5 search over post title+content. Trigram tokenizer = minimum 3 chars.
+// SECTION: routes:search
 app.get('/api/search', requireSession, (req, res) => {
   const q = sanitizeFtsQuery(req.query.q);
   if (!q) {
@@ -1259,6 +1309,7 @@ app.get('/api/search', requireSession, (req, res) => {
 
 // @mention inbox for either the current token's pseudonym or, for admins,
 // their public username. Rows still age out after TOKEN_TTL_HOURS.
+// SECTION: routes:mentions
 app.post('/api/mentions', requireSession, (req, res) => {
   const { token } = req.body || {};
   const target = isLiveAdmin(req.user.uid)
@@ -1316,6 +1367,8 @@ app.get('/api/feed.xml', requireSession, (req, res) => {
 // Deep-link routes. We serve the SPA shell for any /p/<id> — the client
 // fetches /api/posts/:id and renders a "not found" state if needed, so
 // this handler does not leak whether `id` exists.
+// SECTION: routes:spa — deep-link catchalls; must stay oblivious to record
+// existence (see CLAUDE.md "Privacy model" → deep-link endpoints).
 app.get('/p/:id(\\d+)', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
@@ -1331,6 +1384,7 @@ app.get('/b/:id(\\d+)', (req, res) => {
 // and comments, and stale mention pointers. Nothing here is keyed by
 // user_id, so this sweep plus the calendar boundary is what makes old
 // posts truly unlinkable.
+// SECTION: rotate+listen
 function rotate() {
   const now = Date.now();
   const mentionCutoff = now - TOKEN_TTL_HOURS * 3600 * 1000;

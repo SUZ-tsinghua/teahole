@@ -1,6 +1,12 @@
 /* ============================================================
-   Post card
+   FILE MAP — grep "SECTION:" to jump.
+     SECTION: post-card     feed-list cards (+ per-pseudonym hue)
+     SECTION: reader        main reader pane + two-column grid
+     SECTION: comments      comment tree layout + reply forms
+     SECTION: mentions      mentions inbox + post-ref chips
    ============================================================ */
+
+/* SECTION: post-card */
 .post {
   padding: 10px 12px;
   border-radius: var(--radius-md);
@@ -208,9 +214,7 @@
 }
 .foot-link:hover { background: var(--surface-hover); color: var(--fg); }
 
-/* ============================================================
-   Reader
-   ============================================================ */
+/* SECTION: reader */
 .reader {
   min-height: 0;
   overflow-y: auto;
@@ -395,8 +399,7 @@
   font-family: var(--sans);
 }
 
-/* ============================================================
-   Comments
+/* SECTION: comments
    ============================================================ */
 .comment {
   padding: 14px 0 12px;
@@ -458,8 +461,7 @@
   100% { background-color: transparent; }
 }
 
-/* ============================================================
-   Mentions + post refs
+/* SECTION: mentions
    ============================================================ */
 .mention {
   color: var(--accent);

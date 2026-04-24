@@ -1,6 +1,11 @@
 /* ============================================================
-   Markdown — prose + comment-body
+   FILE MAP — grep "SECTION:" to jump.
+     SECTION: prose          headings, lists, paragraphs in post/comment bodies
+     SECTION: syntax-colors  --tok-* variables applied to fenced code blocks
+     SECTION: math           KaTeX inline/display block styling
    ============================================================ */
+
+/* SECTION: prose */
 .prose h1, .prose h2, .prose h3,
 .comment-body h1, .comment-body h2, .comment-body h3 {
   font-family: var(--sans);
@@ -80,7 +85,8 @@
   color: var(--fg);
 }
 
-/* Syntax highlight token colors — tuned for both themes via CSS vars.
+/* SECTION: syntax-colors
+   Syntax highlight token colors — tuned for both themes via CSS vars.
    Reset inline-code color for spans emitted by the tokenizer. */
 .prose pre code span, .comment-body pre code span { color: inherit; background: transparent; }
 .prose pre code .tok-kw,   .comment-body pre code .tok-kw   { color: var(--tok-kw); font-weight: 600; }
@@ -92,7 +98,8 @@
 .prose pre code .tok-var,  .comment-body pre code .tok-var  { color: var(--tok-var); }
 .prose pre code .tok-op,   .comment-body pre code .tok-op   { color: var(--tok-op); }
 
-/* Math blocks / inline math produced by KaTeX. */
+/* SECTION: math
+   Math blocks / inline math produced by KaTeX. */
 .prose .math-block, .comment-body .math-block {
   margin: 0.9em 0;
   overflow-x: auto;

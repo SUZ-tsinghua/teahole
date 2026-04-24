@@ -1,6 +1,14 @@
 /* ============================================================
-   Sidebar — vibrancy
+   FILE MAP — grep "SECTION:" to jump.
+     SECTION: sidebar        main sidebar panel + glass styling
+     SECTION: search         search box
+     SECTION: filter-bar     pinned-channel pills
+     SECTION: channels       channel list + pin/mute actions
+     SECTION: badge          channel unread badge
+     SECTION: compose        compose-field (sidebar quick-compose)
    ============================================================ */
+
+/* SECTION: sidebar */
 .sidebar {
   display: flex;
   flex-direction: column;
@@ -50,7 +58,7 @@
   margin-top: -1px;
 }
 
-/* Search */
+/* SECTION: search */
 .search-form {
   display: flex;
   gap: 6px;
@@ -74,7 +82,7 @@
 }
 #search-clear:hover { color: var(--danger); border-color: transparent; background: var(--danger-soft); }
 
-/* Filter bar */
+/* SECTION: filter-bar */
 .filter-bar {
   padding: 4px 12px;
   display: flex;
@@ -148,7 +156,7 @@
   transform: none;
 }
 
-/* Channels */
+/* SECTION: channels */
 .channel-list {
   padding: 2px 8px 6px;
   display: flex;
@@ -394,7 +402,7 @@ button.ghost.small.is-followed {
 }
 .channel-del:hover { color: var(--danger); background: var(--danger-soft); }
 
-/* Channel badge */
+/* SECTION: badge */
 .channel-badge {
   display: inline-flex;
   align-items: center;
@@ -413,7 +421,7 @@ button.ghost.small.is-followed {
 .channel-badge.small { font-size: 10.5px; padding: 1px 7px; align-self: flex-start; margin-bottom: 4px; }
 .thread-channel { margin: 0 0 10px; }
 
-/* Compose field */
+/* SECTION: compose */
 .field-row {
   display: flex;
   align-items: center;

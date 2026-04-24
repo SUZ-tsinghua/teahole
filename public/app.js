@@ -1,3 +1,35 @@
+// ────────────────────────────────────────────────────────────────────────────
+// FILE MAP — grep "SECTION:" (via the Grep tool / ripgrep) to jump.
+// Keep in sync when adding large blocks.
+//
+//   SECTION: constants          storage keys, reaction kinds, regexes
+//   SECTION: dom-helpers        $/$$/el/api and theme init
+//   SECTION: token-state        getToken/setToken/clearToken + identity helpers
+//   SECTION: reactions-state    myReactions local cache
+//   SECTION: mention-state      inbox read-cursor + handle helpers
+//   SECTION: formatting         fmtDate, fmtMeta, hueFromPseudonym
+//   SECTION: view-routing       VIEW const, showReader, route sync, popstate
+//   SECTION: token-ui           token chip + dialogs (mint/rotate)
+//   SECTION: auth-form          login / register / send-code UI
+//   SECTION: feed                feed list + channel filter bar
+//   SECTION: saved-followed     saved-posts + followed-posts UI
+//   SECTION: bulletins          bulletin list + admin dialog
+//   SECTION: compose-upload     image picker wiring for the composer
+//   SECTION: post-card          post preview card renderer
+//   SECTION: search             search input + results
+//   SECTION: compose            composer panel
+//   SECTION: reader             thread view + actions
+//   SECTION: comments           comment tree + reply/edit forms
+//   SECTION: reactions-ui       reaction bar renderer
+//   SECTION: mentions-dialog    mentions inbox
+//   SECTION: markdown           renderMarkdown + mention chips + safe URLs
+//   SECTION: syntax-highlight   fenced-code tokenizer (HL_RULES)
+//   SECTION: math               KaTeX wrapper
+//   SECTION: autocomplete       attachMentionAutocomplete (@ / # popups)
+//   SECTION: sidebar+init       resizable sidebar + startup wiring
+// ────────────────────────────────────────────────────────────────────────────
+
+// SECTION: constants
 const TOKEN_STORE_KEY = 'teahole.token';
 const THEME_STORE_KEY = 'teahole.theme';
 const MY_REACTIONS_KEY = 'teahole.myReactions';
@@ -14,6 +46,7 @@ const MENTION_IN_TEXT_RE = /@([A-Za-z0-9_]{3,32})|#(\d{1,10})/g;
 const MAX_VISUAL_DEPTH = 4;
 const MENTION_POLL_MS = 60_000;
 
+// SECTION: dom-helpers
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => document.querySelectorAll(s);
 const el = (tag, props = {}, children = []) => {
@@ -47,6 +80,7 @@ async function api(method, path, body) {
   return data;
 }
 
+// SECTION: token-state
 function getToken() {
   try {
     const raw = localStorage.getItem(TOKEN_STORE_KEY);
@@ -69,6 +103,7 @@ function tokenIdentityLabel(t) {
 
 // "Did I react?" is a client-only concept: the server never returns per-user
 // reaction state. Keyed by pseudonym so rotating/losing the token drops it.
+// SECTION: reactions-state
 function myReactionsFor(pseudonym) {
   if (!pseudonym) return {};
   try {
@@ -89,6 +124,7 @@ function setMyReaction(pseudonym, postId, kind, on) {
   localStorage.setItem(MY_REACTIONS_KEY, JSON.stringify(all));
 }
 
+// SECTION: mention-state
 // Mention-inbox read state is keyed by the inbox target: per-token for
 // anonymous posts, per-username for public admin handles.
 function getMentionSeen(key) {
@@ -107,6 +143,7 @@ function setMentionSeen(key, ms) {
   localStorage.setItem(MENTIONS_SEEN_KEY, JSON.stringify(all));
 }
 
+// SECTION: formatting
 function fmtDate(ms) { return new Date(ms).toLocaleString('zh-CN'); }
 function fmtMeta(pseudonym, createdAt, editedAt) {
   const base = `${pseudonym} · ${fmtDate(createdAt)}`;
@@ -137,6 +174,7 @@ function metaLine(pseudonym, createdAt, editedAt) {
   return node;
 }
 
+// SECTION: view-routing
 const VIEW = { EMPTY: 'empty-view', THREAD: 'thread-view', COMPOSE: 'compose-view', BULLETIN: 'bulletin-view' };
 const viewNodes = Object.fromEntries(Object.values(VIEW).map((id) => [id, $('#' + id)]));
 const readerNode = $('#reader');
@@ -242,6 +280,7 @@ function syncUrl(route) {
   history.pushState(null, '', target);
 }
 
+// SECTION: token-ui
 function renderTokenChip() {
   const t = getToken();
   const chip = $('#token-toggle');
@@ -442,6 +481,7 @@ async function logout() {
 
 let sendCodeCooldownIv = null;
 
+// SECTION: auth-form
 function stopSendCodeCooldown() {
   if (sendCodeCooldownIv) {
     clearInterval(sendCodeCooldownIv);
@@ -568,6 +608,7 @@ $('#confirm-rotate-yes').addEventListener('click', async () => {
   if (ok) closeConfirmRotate();
 });
 
+// SECTION: feed
 // --- Feed + filters ---
 
 function renderFilterBar() {
@@ -825,6 +866,7 @@ function renderComposeChannels() {
   if (prev && channels.some((c) => String(c.id) === prev)) sel.value = prev;
 }
 
+// SECTION: saved-followed
 // --- Saved posts (account-scoped reader state) ---
 
 async function loadSavedIds() {
@@ -935,6 +977,7 @@ async function filterBySaved() {
   showReader(VIEW.EMPTY);
 }
 
+// SECTION: bulletins
 // --- Bulletins ---
 
 async function loadBulletins() {
@@ -1040,8 +1083,10 @@ function closeBulletinDialog() { $('#bulletin-dialog').hidden = true; }
 $('#new-bulletin-btn').addEventListener('click', () => openBulletinDialog(null));
 $('#saved-filter-btn').addEventListener('click', () => filterBySaved());
 
+// SECTION: compose-upload
 // Image uploads: content-addressed, no user_id storage. The server
-// strips EXIF via sharp before writing to disk.
+// strips EXIF via sharp, resizes to max 1600px wide, and emits WebP
+// (except for PNGs, which stay PNG to preserve transparency).
 async function uploadImage(file) {
   const t = getToken();
   const body = new FormData();
@@ -1109,6 +1154,7 @@ $('#bulletin-form').addEventListener('submit', async (e) => {
   }
 });
 
+// SECTION: post-card
 function renderPostCard(p) {
   const titleChildren = [
     el('span', { className: 'id-badge', textContent: `#${p.id}` }),
@@ -1145,6 +1191,7 @@ function markActivePost(id) {
   }
 }
 
+// SECTION: search
 // --- Search ---
 
 // `#<id>` or a bare positive integer is treated as a direct post lookup
@@ -1174,6 +1221,7 @@ $('#search-input').addEventListener('input', () => {
 });
 $('#search-clear').addEventListener('click', clearFilter);
 
+// SECTION: compose
 // --- Compose post ---
 
 $('#compose-btn').addEventListener('click', openCompose);
@@ -1223,6 +1271,7 @@ $('#post-form').addEventListener('submit', async (e) => {
   }
 });
 
+// SECTION: reader
 // --- Thread view ---
 
 function knownMentionHandles() {
@@ -1424,6 +1473,7 @@ window.addEventListener('popstate', () => {
   }
 });
 
+// SECTION: comments
 // --- Comments ---
 
 function renderComment(c, depth) {
@@ -1628,6 +1678,7 @@ function renderCommentTree(box, comments) {
   for (const r of kids.get(null) || []) walk(r, 0, box);
 }
 
+// SECTION: reactions-ui
 // --- Reactions ---
 
 function renderReactions(counts) {
@@ -1666,6 +1717,7 @@ async function toggleReaction(kind) {
   }
 }
 
+// SECTION: mentions-dialog
 // --- Mentions ---
 
 async function refreshMentions({ silent = false, open = false } = {}) {
@@ -1746,6 +1798,7 @@ function stopPollingMentions() {
   if (mentionPollTimer) { clearInterval(mentionPollTimer); mentionPollTimer = null; }
 }
 
+// SECTION: markdown
 // --- Markdown + mention chips ---
 
 const SAFE_URL_RE = /^(https?:\/\/|\/p\/\d{1,10}(?:[?#].*)?$)/i;
@@ -1843,6 +1896,7 @@ function renderInlineWithBreaks(text, parent) {
   });
 }
 
+// SECTION: syntax-highlight
 // --- Syntax highlighting for fenced code blocks ---
 
 const HL_LANG_ALIASES = {
@@ -2021,6 +2075,7 @@ function highlightInto(node, langRaw, code) {
   flushPending();
 }
 
+// SECTION: math
 // --- LaTeX math via KaTeX ---
 
 const KATEX_OPTS_INLINE = { throwOnError: false, displayMode: false, output: 'html', strict: 'ignore' };
@@ -2142,6 +2197,7 @@ function renderMarkdown(text) {
   return frag;
 }
 
+// SECTION: autocomplete
 // --- Autocomplete for @ and # ---
 
 function attachMentionAutocomplete(textarea) {
@@ -2269,6 +2325,7 @@ document.addEventListener('keydown', (e) => {
   if (currentView !== VIEW.EMPTY) closeReader();
 });
 
+// SECTION: sidebar+init
 // --- Resizable sidebar (desktop only; mobile media query hides the bar) ---
 
 (function setupSidebarResizer() {

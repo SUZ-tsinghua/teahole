@@ -1,4 +1,12 @@
 <!doctype html>
+<!--
+  FILE MAP — grep "SECTION:" to jump.
+    SECTION: header       top-bar (brand + theme toggle + userbar)
+    SECTION: auth-view    login / register form (hidden when logged in)
+    SECTION: forum-view   main app: sidebar + reader pane
+    SECTION: dialogs      token / confirm-rotate / channel / bulletin / help /
+                          followed / mentions  (hidden by default, toggled via app.js)
+-->
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
@@ -9,6 +17,7 @@
 <script src="/theme-init.js"></script>
 </head>
 <body>
+<!-- SECTION: header -->
 <header>
   <div class="brand">
     <span class="brand-dot"></span>
@@ -31,6 +40,7 @@
 </header>
 
 <main id="app">
+  <!-- SECTION: auth-view -->
   <section id="auth-view" class="auth" hidden>
     <div class="auth-card">
       <h2>欢迎回来</h2>
@@ -53,6 +63,7 @@
     </div>
   </section>
 
+  <!-- SECTION: forum-view -->
   <section id="forum-view" class="layout" hidden>
     <aside class="sidebar">
       <div class="sidebar-head">
@@ -160,6 +171,7 @@
     </section>
   </section>
 
+  <!-- SECTION: dialogs — all hidden by default, toggled via app.js open*Dialog() -->
   <div id="token-dialog" class="dialog" hidden>
     <div class="dialog-backdrop" data-close="dialog"></div>
     <div class="dialog-card">

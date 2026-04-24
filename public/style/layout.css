@@ -1,6 +1,10 @@
 /* ============================================================
-   Header — translucent vibrancy bar
+   FILE MAP — grep "SECTION:" to jump.
+     SECTION: header   top-bar (brand, account chip, toggles)
+     SECTION: layout   main app grid (sidebar + reader panes)
    ============================================================ */
+
+/* SECTION: header */
 header {
   height: var(--nav-h);
   display: flex;
@@ -91,8 +95,8 @@ header {
 }
 
 main#app { height: calc(100vh - var(--nav-h)); overflow: hidden; position: relative; }
-/* ============================================================
-   Layout
+/* SECTION: layout
+   ============================================================
    ============================================================ */
 .layout {
   display: grid;

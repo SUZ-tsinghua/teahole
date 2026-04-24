@@ -1,8 +1,15 @@
 /* ============================================================
    teahole — macOS-inspired vibrancy UI
    Translucent glass, soft shadows, SF Pro, animated aurora bg.
+
+   FILE MAP — grep "SECTION:" to jump.
+     SECTION: theme-light    light-mode CSS variables (the master list)
+     SECTION: theme-dark     dark-mode overrides
+     SECTION: body-aurora    base body styling + animated background blobs
+     SECTION: scrollbars     webkit scrollbar styling
    ============================================================ */
 
+/* SECTION: theme-light */
 :root, :root[data-theme="light"] {
   --bg-base: #f2f1f7;
   --bg-a1: #ffd6e8;
@@ -76,6 +83,7 @@
   color-scheme: light;
 }
 
+/* SECTION: theme-dark */
 :root[data-theme="dark"] {
   --bg-base: #0a0a10;
   --bg-a1: #4d1b66;
@@ -137,6 +145,7 @@
   color-scheme: dark;
 }
 
+/* SECTION: body-aurora */
 * { box-sizing: border-box; }
 html, body { height: 100%; }
 [hidden] { display: none !important; }
@@ -188,8 +197,7 @@ body::after {
 :root[data-theme="dark"] body::after {
   background: radial-gradient(ellipse at center, transparent 0%, rgba(0, 0, 0, 0.45) 100%);
 }
-/* ============================================================
-   Scrollbars
+/* SECTION: scrollbars
    ============================================================ */
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track { background: transparent; }
