@@ -89,10 +89,12 @@ CREATE INDEX IF NOT EXISTS idx_reactions_post ON reactions(post_id);
 -- Polls attach 0..1 to a post. question + ordered option list. A vote is
 -- keyed by token_hash (not user_id), so votes cascade out when the token
 -- expires — same privacy model as reactions. PK (poll_id, token_hash)
--- enforces one vote per token per poll; rotating the token effectively
--- drops the link to the previous vote, consistent with the rest of the
--- app. Results are NEVER returned by the server unless the caller's token
--- already has a vote row on the poll (enforced server-side in routes).
+-- enforces one vote per token per poll. Aggregate counts live on
+-- poll_options.votes_total, a monotonic counter, so totals stay durable
+-- after token rotation while the per-token row in poll_votes is still
+-- purged on expiry (preserving "can't link old content to current
+-- account"). Results are NEVER returned by the server unless the caller's
+-- token already has a vote row on the poll (enforced server-side).
 CREATE TABLE IF NOT EXISTS polls (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   post_id INTEGER NOT NULL UNIQUE,
@@ -106,6 +108,7 @@ CREATE TABLE IF NOT EXISTS poll_options (
   poll_id INTEGER NOT NULL,
   position INTEGER NOT NULL,
   label TEXT NOT NULL,
+  votes_total INTEGER NOT NULL DEFAULT 0,
   FOREIGN KEY (poll_id) REFERENCES polls(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_poll_options_poll ON poll_options(poll_id, position);
@@ -368,6 +371,18 @@ db.exec('CREATE INDEX IF NOT EXISTS idx_posts_channel ON posts(channel_id)');
 const prefCols = columnsOf('user_channel_prefs');
 if (prefCols.length && !prefCols.includes('last_seen_at')) {
   db.exec('ALTER TABLE user_channel_prefs ADD COLUMN last_seen_at INTEGER');
+}
+
+// Durable per-option vote counter. Backfill from poll_votes so existing
+// polls don't drop to zero on the next token sweep.
+const pollOptCols = columnsOf('poll_options');
+if (pollOptCols.length && !pollOptCols.includes('votes_total')) {
+  db.exec('ALTER TABLE poll_options ADD COLUMN votes_total INTEGER NOT NULL DEFAULT 0');
+  db.exec(
+    `UPDATE poll_options SET votes_total = (
+       SELECT COUNT(*) FROM poll_votes WHERE option_id = poll_options.id
+     )`
+  );
 }
 
 // SECTION: seeds

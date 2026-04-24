@@ -334,11 +334,11 @@ const Q = {
   insertPoll:      db.prepare('INSERT INTO polls (post_id, question, created_at) VALUES (?, ?, ?)'),
   insertPollOption: db.prepare('INSERT INTO poll_options (poll_id, position, label) VALUES (?, ?, ?)'),
   getPollByPost:   db.prepare('SELECT id, question FROM polls WHERE post_id = ?'),
-  listPollOptions: db.prepare('SELECT id, position, label FROM poll_options WHERE poll_id = ? ORDER BY position ASC, id ASC'),
+  listPollOptions: db.prepare('SELECT id, position, label, votes_total FROM poll_options WHERE poll_id = ? ORDER BY position ASC, id ASC'),
   findPollVote:    db.prepare('SELECT option_id FROM poll_votes WHERE poll_id = ? AND token_hash = ?'),
   optionInPoll:    db.prepare('SELECT 1 FROM poll_options WHERE id = ? AND poll_id = ?'),
   insertPollVote:  db.prepare('INSERT INTO poll_votes (poll_id, token_hash, option_id, created_at) VALUES (?, ?, ?, ?)'),
-  countPollVotes:  db.prepare('SELECT option_id, COUNT(*) AS n FROM poll_votes WHERE poll_id = ? GROUP BY option_id'),
+  bumpPollOptionTotal: db.prepare('UPDATE poll_options SET votes_total = votes_total + 1 WHERE id = ?'),
   deletePollForPost: db.prepare('DELETE FROM polls WHERE post_id = ?'),
   insertMention:   db.prepare('INSERT INTO mentions (target_pseudonym, post_id, comment_id, created_at) VALUES (?, ?, ?, ?)'),
   listMentions:    db.prepare(
@@ -626,48 +626,57 @@ function parsePollInput(poll) {
   return { ok: true, poll: { question, options } };
 }
 
-const createPollTx = db.transaction((postId, question, options, createdAt) => {
-  const info = Q.insertPoll.run(postId, question, createdAt);
-  const pollId = info.lastInsertRowid;
-  for (let i = 0; i < options.length; i++) {
-    Q.insertPollOption.run(pollId, i, options[i]);
-  }
-});
-
 // Counts/total/my_option_id are filled ONLY when the caller's token already
 // has a vote row recorded — that's the single privacy gate. tokenHash may
-// be null for anonymous reads.
+// be null for anonymous reads. Aggregate counts come from the durable
+// poll_options.votes_total counter so totals survive token expiry; the
+// per-row poll_votes table still cascades on token purge to preserve the
+// "no path back to a current account" property.
 function pollViewFor(postId, tokenHash) {
   const poll = Q.getPollByPost.get(postId);
   if (!poll) return null;
-  const options = Q.listPollOptions.all(poll.id).map(
-    (o) => ({ id: o.id, position: o.position, label: o.label })
-  );
+  const rows = Q.listPollOptions.all(poll.id);
+  const options = rows.map((o) => ({ id: o.id, position: o.position, label: o.label }));
   const base = { id: poll.id, question: poll.question, options };
   if (!tokenHash) return { ...base, voted: false };
   const my = Q.findPollVote.get(poll.id, tokenHash);
   if (!my) return { ...base, voted: false };
-  const counts = new Map(options.map((o) => [o.id, 0]));
-  let total = 0;
-  for (const row of Q.countPollVotes.all(poll.id)) {
-    counts.set(row.option_id, row.n);
-    total += row.n;
-  }
+  const total = rows.reduce((sum, r) => sum + r.votes_total, 0);
   return {
     ...base,
     voted: true,
     my_option_id: my.option_id,
     total,
-    counts: options.map((o) => ({ option_id: o.id, votes: counts.get(o.id) || 0 })),
+    counts: rows.map((r) => ({ option_id: r.id, votes: r.votes_total })),
   };
 }
 
 // Concurrent submits from the same token would otherwise race past the
-// findPollVote check and trip the PK constraint with a 500.
+// findPollVote check and trip the PK constraint with a 500. The counter
+// bump lives inside the same transaction so totals can never get ahead of
+// the row count.
 const castVoteTx = db.transaction((pollId, tokenHash, optionId) => {
   if (Q.findPollVote.get(pollId, tokenHash)) return false;
   Q.insertPollVote.run(pollId, tokenHash, optionId, Date.now());
+  Q.bumpPollOptionTotal.run(optionId);
   return true;
+});
+
+// Atomic post creation: the post row, its mention pointers, and (if
+// requested) its poll all commit together or not at all. Otherwise a poll
+// insert failure would leave a live post without its requested poll.
+const createPostTx = db.transaction((publicHandle, title, content, createdAt, tokenHash, channelId, mentionTargets, poll) => {
+  const info = Q.insertPost.run(publicHandle, title, content, createdAt, tokenHash, channelId);
+  const postId = info.lastInsertRowid;
+  for (const target of mentionTargets) Q.insertMention.run(target, postId, null, createdAt);
+  if (poll) {
+    const pInfo = Q.insertPoll.run(postId, poll.question, createdAt);
+    const pollId = pInfo.lastInsertRowid;
+    for (let i = 0; i < poll.options.length; i++) {
+      Q.insertPollOption.run(pollId, i, poll.options[i]);
+    }
+  }
+  return postId;
 });
 
 // Admins post non-anonymously under their username, so their rotations
@@ -855,12 +864,9 @@ function publicHandleFor(user, authorKey) {
   return authorKey;
 }
 
-// Recompute the mention pointers for a piece of content. Old mentions for
-// this post/comment are cleared first so edits don't leave stale rows.
-function recordMentionsForPost(postId, content, createdAt) {
-  const targets = extractMentionTargets(content);
-  if (targets.length) recordMentionsTx(targets, postId, null, createdAt);
-}
+// Recompute the mention pointers for a comment. Old mentions are cleared
+// first so edits don't leave stale rows. Posts route mention writes through
+// createPostTx so the whole post commit stays atomic.
 function recordMentionsForComment(postId, commentId, content, createdAt) {
   const targets = extractMentionTargets(content);
   if (targets.length) recordMentionsTx(targets, postId, commentId, createdAt);
@@ -1068,14 +1074,11 @@ app.post('/api/posts', requireSession, (req, res) => {
   if (!pollParsed.ok) return res.status(400).json({ error: pollParsed.error });
 
   const createdAt = Date.now();
-  const info = Q.insertPost.run(publicHandle, t, c, createdAt, resolved.tokenHash, ch.channelId);
-  recordMentionsForPost(info.lastInsertRowid, c, createdAt);
-  if (pollParsed.poll) {
-    createPollTx(info.lastInsertRowid, pollParsed.poll.question, pollParsed.poll.options, createdAt);
-  }
+  const targets = extractMentionTargets(c);
+  const postId = createPostTx(publicHandle, t, c, createdAt, resolved.tokenHash, ch.channelId, targets, pollParsed.poll);
 
   res.json({
-    id: info.lastInsertRowid,
+    id: postId,
     pseudonym: publicHandle,
     author_key: resolved.authorKey,
     title: t,
