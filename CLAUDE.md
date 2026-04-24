@@ -10,7 +10,7 @@ JWT_SECRET=dev-secret-change-me npm start   # production-style server on :3000
 npm run dev                                  # same, with node --watch
 ```
 
-There is no build step, no linter, no test suite. The frontend is plain HTML/CSS/JS served statically from `public/`; the server is a single `server.js`.
+There is no build step, no linter, no test suite. The frontend is plain HTML/CSS/JS served statically from `public/`; the server is a single `server.js`. KaTeX is vendored under `public/vendor/katex/` (woff2 fonts only) so the strict CSP doesn't need a CDN exception.
 
 **Syntax-check after edits:**
 
@@ -38,7 +38,7 @@ node -e "require('./db.js')"   # also runs migrations end-to-end
 
 ### Client (`public/app.js`)
 
-One file, no modules, ~700 lines. Reusable helpers at the top — always use them before reaching for raw DOM APIs:
+One file, no modules, ~2000 lines. Reusable helpers at the top — always use them before reaching for raw DOM APIs:
 
 - `el(tag, props, children)` — the only way to create elements. Never use `innerHTML` on user content.
 - `$(sel)`, `$$(sel)` — document-scoped query shortcuts.
@@ -48,14 +48,20 @@ One file, no modules, ~700 lines. Reusable helpers at the top — always use the
 Rendering pipeline for post/comment bodies:
 
 1. Raw text comes back from the API untouched.
-2. `renderMarkdown(text)` parses a small markdown subset (bold, italic, inline+fenced code, links, lists, blockquotes, h1–h3) into a DOM fragment. It never runs `innerHTML` on user data.
-3. Every plain-text run inside the markdown output passes through `renderTextWithMentions(text)`, which turns `@[a-f0-9]{8}` and `#<id>` into clickable chips.
+2. `renderMarkdown(text)` parses a small markdown subset (bold, italic, inline+fenced code, links, lists, blockquotes, h1–h3, `$…$` / `$$…$$` math) into a DOM fragment. It never runs `innerHTML` on user data.
+3. Fenced code blocks go through `highlightInto(node, lang, code)` — a small homemade tokenizer keyed by `HL_LANG_ALIASES` → `HL_RULES`. Output is `<span class="tok-*">` with colours driven by CSS vars (see `style/base.css`). Adding a language means adding an entry in both maps plus a CSS token colour if it's a new class; unknown languages fall back to plain text.
+4. Math blocks go through `renderMathInto(node, expr, displayMode)` — a thin wrapper around vendored `window.katex.render`. It always passes `throwOnError: false`, so bad LaTeX degrades to a red error span rather than blowing up rendering.
+5. Every plain-text run inside the markdown output passes through `renderTextWithMentions(text)`, which turns `@[a-f0-9]{8}` and `#<id>` into clickable chips.
 
 **If you add a new text-display call site, go through `renderMarkdown` — don't call `renderTextWithMentions` directly, or markdown formatting will be bypassed.**
 
 URL routing is client-side: `openThread(id)` pushes `/p/<id>`, `closeReader()` pushes `/`, a `popstate` handler re-renders. Deep-link paths are served by the server's SPA catch-all; the client then fetches `/api/posts/:id` and shows a not-found state if needed.
 
 `@`/`#` autocomplete is wired via `attachMentionAutocomplete(fieldNode)`. **Must be called after the field is in the DOM** (the popup is inserted as the field's next sibling). For reply forms, that means attaching after `form.appendChild(ta)`, not during construction.
+
+### Stylesheet layout (`public/style.css`, `public/style/*.css`)
+
+`style.css` is a 19-line aggregator that `@import`s the real rules from `style/*.css`, split by banner: `base` (theme vars — must load first), `layout`, `auth`, `sidebar`, `reader`, `forms`, `dialog`, `markdown`, `mobile` (media-query overrides — must load last). When adding new rules, drop them in the module that matches the component, not at the bottom of `style.css`. The whole thing still goes through one `<link rel="stylesheet" href="/style.css">`.
 
 ### Privacy model (do not violate)
 
