@@ -15,15 +15,21 @@ const DATA_DIR = process.env.DATA_DIR || __dirname;
 const DEPT_ALLOWLIST_FILE =
   process.env.DEPT_ALLOWLIST_FILE || path.join(DATA_DIR, 'dept-allowlist.txt');
 
-// With no RESEND_API_KEY we log the code instead of sending — keeps the
-// local dev flow unblocked without a real mail account.
-let resendClient = null;
-function getResendClient() {
-  if (resendClient) return resendClient;
-  if (!process.env.RESEND_API_KEY) return null;
-  const { Resend } = require('resend');
-  resendClient = new Resend(process.env.RESEND_API_KEY);
-  return resendClient;
+// With no GMAIL_USER / GMAIL_APP_PASSWORD we log the code instead of sending
+// — keeps the local dev flow unblocked without a real mail account.
+let mailTransport = null;
+function getMailTransport() {
+  if (mailTransport) return mailTransport;
+  if (!process.env.GMAIL_USER || !process.env.GMAIL_APP_PASSWORD) return null;
+  const nodemailer = require('nodemailer');
+  mailTransport = nodemailer.createTransport({
+    service: 'gmail',
+    auth: {
+      user: process.env.GMAIL_USER,
+      pass: process.env.GMAIL_APP_PASSWORD,
+    },
+  });
+  return mailTransport;
 }
 
 // Allowlist stores sha256(email) rather than raw emails so a process or
@@ -51,13 +57,13 @@ function isAllowedEmail(email) {
 }
 
 async function sendVerificationEmail(to, code) {
-  const client = getResendClient();
-  if (!client) {
-    console.log(`[send-code] RESEND_API_KEY not set — dev code for ${to}: ${code}`);
+  const transport = getMailTransport();
+  if (!transport) {
+    console.log(`[send-code] GMAIL_USER not set — dev code for ${to}: ${code}`);
     return;
   }
-  const from = process.env.RESEND_FROM || 'onboarding@resend.dev';
-  const { error } = await client.emails.send({
+  const from = process.env.GMAIL_FROM || `茶园树洞 <${process.env.GMAIL_USER}>`;
+  await transport.sendMail({
     from,
     to,
     subject: '茶园树洞 · 注册验证码',
@@ -65,7 +71,6 @@ async function sendVerificationEmail(to, code) {
       `你的验证码是 ${code}，10 分钟内有效。\n\n` +
       `如果不是你本人发起，请忽略这封邮件。`,
   });
-  if (error) throw new Error(error.message || 'Resend API error');
 }
 
 const PORT = Number(process.env.PORT) || 3000;
@@ -668,7 +673,7 @@ app.post('/api/send-code', rateLimit('send-code', 5), (req, res) => {
 
 // Atomically claim a per-email send slot: the throttle read and the
 // upsert share one transaction so two concurrent requests can't both
-// pass the 60s check and each trigger a paid Resend send.
+// pass the 60s check and each trigger an SMTP send.
 const claimSendCodeSlotTx = db.transaction((email, codeHash, now) => {
   if (Q.usernameExists.get(email)) return false;
   const existing = Q.findEmailCode.get(email);
