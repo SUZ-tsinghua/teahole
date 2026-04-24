@@ -6,9 +6,8 @@
 
 > [English](README.en.md) · 中文
 
-> **仅限内部访问。** 为了保持小圈子氛围，只有 allowlist 里的邮箱才能注册。
-> 想体验的朋友，请发邮件或加微信找我：
-> 邮箱 <cynb2dwszz@privaterelay.appleid.com> · 微信 `<your-wechat-id>`
+> **仅限内部访问。** 为了仅让茶园内部访问，只有 allowlist 里的邮箱才能注册。
+> 想体验的朋友，请发邮件或微信找我
 
 一个「登录可见、默认匿名」的社区论坛。在线访问：<https://teahole.fly.dev>
 
