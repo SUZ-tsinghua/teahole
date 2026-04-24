@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS users (
   username TEXT UNIQUE NOT NULL,
   password_hash TEXT NOT NULL,
   is_admin INTEGER NOT NULL DEFAULT 0,
+  display_name TEXT,
   created_at INTEGER NOT NULL,
   tokens_issued_date TEXT,
   tokens_issued_count INTEGER NOT NULL DEFAULT 0
@@ -166,6 +167,19 @@ CREATE TABLE IF NOT EXISTS bulletins (
 );
 CREATE INDEX IF NOT EXISTS idx_bulletins_created ON bulletins(created_at);
 
+-- One-shot email verification codes. Keyed by email so sending a new
+-- code for an address replaces any pending one. Stores only the hash
+-- of the 6-digit code; rotate() purges expired rows. Intentionally
+-- NOT FK'd to users — codes exist before the account does.
+CREATE TABLE IF NOT EXISTS email_codes (
+  email TEXT PRIMARY KEY,
+  code_hash TEXT NOT NULL,
+  expires_at INTEGER NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_email_codes_expires ON email_codes(expires_at);
+
 CREATE TRIGGER IF NOT EXISTS posts_ai AFTER INSERT ON posts BEGIN
   INSERT INTO posts_fts(rowid, title, content) VALUES (new.id, new.title, new.content);
 END;
@@ -219,6 +233,11 @@ if (!commentCols.includes('token_hash')) {
   db.exec('ALTER TABLE comments ADD COLUMN token_hash TEXT');
 }
 db.exec('CREATE INDEX IF NOT EXISTS idx_comments_parent ON comments(parent_id)');
+
+const userCols = columnsOf('users');
+if (!userCols.includes('display_name')) {
+  db.exec('ALTER TABLE users ADD COLUMN display_name TEXT');
+}
 
 const postCols = columnsOf('posts');
 if (!postCols.includes('edited_at')) {
@@ -276,6 +295,47 @@ try {
     '[warn] could not create username NOCASE unique index — dedupe existing users first:',
     e.message
   );
+}
+
+// Migration to email-based accounts. The old schema allowed arbitrary
+// `username`s; posts/comments never linked back to users, so wiping the
+// users table here is safe for content. FK cascades clear reader-side
+// state (followed_posts, user_channel_prefs, saved_posts). Seeds two
+// debug accounts so the app is usable right after the migration.
+if (db.pragma('user_version', { simple: true }) < 3) {
+  const bcrypt = require('bcrypt');
+  const now = Date.now();
+  db.exec('DELETE FROM users');
+  const seed = db.prepare(
+    `INSERT INTO users (username, password_hash, is_admin, display_name, created_at)
+     VALUES (?, ?, ?, ?, ?)`
+  );
+  seed.run('admin@example.com', bcrypt.hashSync('admin1234', 12), 1, 'Admin01', now);
+  seed.run('user@example.com', bcrypt.hashSync('user1234', 12), 0, null, now);
+  db.pragma('user_version = 3');
+  console.log('[migrate] users reset; seeded admin@example.com + user@example.com (see README for dev passwords)');
+}
+
+// Assign Admin## display names to any admin that doesn't have one yet.
+// The documented promotion flow is raw SQL, so promoted admins start
+// with NULL display_name.
+const missingAdmins = db
+  .prepare('SELECT id FROM users WHERE is_admin = 1 AND display_name IS NULL ORDER BY id ASC')
+  .all();
+if (missingAdmins.length) {
+  const { max } = db
+    .prepare(
+      `SELECT MAX(CAST(substr(display_name, 6) AS INTEGER)) AS max
+       FROM users WHERE display_name GLOB 'Admin[0-9][0-9]'`
+    )
+    .get();
+  const setName = db.prepare('UPDATE users SET display_name = ? WHERE id = ?');
+  let n = (max || 0) + 1;
+  for (const row of missingAdmins) {
+    setName.run(`Admin${String(n).padStart(2, '0')}`, row.id);
+    n += 1;
+  }
+  console.log(`[migrate] assigned display_name to ${missingAdmins.length} admin(s)`);
 }
 
 module.exports = db;

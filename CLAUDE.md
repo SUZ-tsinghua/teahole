@@ -59,6 +59,12 @@ URL routing is client-side: `openThread(id)` pushes `/p/<id>`, `closeReader()` p
 
 ### Privacy model (do not violate)
 
+The top priority is always posting anonymity for regular users. A post or
+comment must not be linkable back to a specific user, even by inference
+from surrounding data, timing, or database raw materials. Assume an
+attacker can read the full database: the design still must not leave a
+path that ties content to an account.
+
 When adding features, every new server-side row or response field gets checked against these rules:
 
 - **No user_id next to content.** If a feature needs "is this mine?", derive it client-side from the token the client already holds. Don't add a lookup that returns per-user state in a read endpoint.

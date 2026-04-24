@@ -34,14 +34,20 @@
     <div class="auth-card">
       <h2>欢迎回来</h2>
       <p class="muted">阅读与发帖都需要登录。普通账号默认匿名；管理员会直接显示用户名，方便大家 @feedback。</p>
-      <form id="login-form">
-        <input name="username" placeholder="用户名" autocomplete="username" required>
+      <form id="login-form" data-mode="login">
+        <input name="email" type="email" placeholder="邮箱" autocomplete="username" required>
         <input name="password" type="password" placeholder="密码" autocomplete="current-password" required>
+        <input name="password_confirm" id="password-confirm" type="password" placeholder="再输入一次密码" autocomplete="new-password" hidden>
+        <div id="code-row" class="code-row" hidden>
+          <input name="code" placeholder="6 位验证码" autocomplete="one-time-code" inputmode="numeric" maxlength="6">
+          <button type="button" id="send-code-btn" class="ghost">发送</button>
+        </div>
         <div class="row">
-          <button type="submit">登录</button>
+          <button type="submit" id="auth-submit">登录</button>
           <button type="button" id="register-btn" class="ghost">注册</button>
         </div>
         <div class="err" id="auth-err"></div>
+        <div class="muted auth-info" id="auth-info"></div>
       </form>
     </div>
   </section>

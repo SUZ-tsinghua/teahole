@@ -10,3 +10,4 @@ data.db-shm
 .claude/
 AGENTS.md
 uploads/
+dept-allowlist.txt

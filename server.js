@@ -9,6 +9,65 @@ const multer = require('multer');
 const sharp = require('sharp');
 const db = require('./db');
 
+const EMAIL_CODE_TTL_MS = 10 * 60 * 1000;
+const EMAIL_CODE_MAX_ATTEMPTS = 5;
+const REGISTER_DOMAIN = (process.env.REGISTER_DOMAIN || '@mails.tsinghua.edu.cn').toLowerCase();
+const DEPT_ALLOWLIST_FILE =
+  process.env.DEPT_ALLOWLIST_FILE || path.join(__dirname, 'dept-allowlist.txt');
+
+// With no RESEND_API_KEY we log the code instead of sending — keeps the
+// local dev flow unblocked without a real mail account.
+let resendClient = null;
+function getResendClient() {
+  if (resendClient) return resendClient;
+  if (!process.env.RESEND_API_KEY) return null;
+  const { Resend } = require('resend');
+  resendClient = new Resend(process.env.RESEND_API_KEY);
+  return resendClient;
+}
+
+// Allowlist stores sha256(email) rather than raw emails so a process or
+// disk dump doesn't hand over the roster. `/api/send-code` always replies
+// ok:true regardless of allowlist outcome, so attackers can't enumerate
+// the list by probing.
+function loadAllowlist(filePath) {
+  if (!fs.existsSync(filePath)) return null;
+  const hashes = new Set();
+  for (const raw of fs.readFileSync(filePath, 'utf8').split('\n')) {
+    const line = raw.replace(/#.*/, '').trim().toLowerCase();
+    if (!line) continue;
+    const email = line.includes('@') ? line : line + REGISTER_DOMAIN;
+    hashes.add(hashToken(email));
+  }
+  return hashes;
+}
+
+let allowedEmailHashes = null;
+
+function isAllowedEmail(email) {
+  if (!email.endsWith(REGISTER_DOMAIN)) return false;
+  if (allowedEmailHashes === null) return true;
+  return allowedEmailHashes.has(hashToken(email));
+}
+
+async function sendVerificationEmail(to, code) {
+  const client = getResendClient();
+  if (!client) {
+    console.log(`[send-code] RESEND_API_KEY not set — dev code for ${to}: ${code}`);
+    return;
+  }
+  const from = process.env.RESEND_FROM || 'onboarding@resend.dev';
+  const { error } = await client.emails.send({
+    from,
+    to,
+    subject: '茶园树洞 · 注册验证码',
+    text:
+      `你的验证码是 ${code}，10 分钟内有效。\n\n` +
+      `如果不是你本人发起，请忽略这封邮件。`,
+  });
+  if (error) throw new Error(error.message || 'Resend API error');
+}
+
 const PORT = Number(process.env.PORT) || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex');
 const TOKEN_TTL_HOURS = Number(process.env.TOKEN_TTL_HOURS) || 24;
@@ -52,6 +111,15 @@ const DUMMY_BCRYPT_HASH = '$2b$12$CwTycUXWue0Thq9StjUM0uJ8VQZ7Lq9sQ3J/5J3zN1fT4e
 
 if (!process.env.JWT_SECRET) {
   console.warn('[warn] JWT_SECRET not set — generated a random one. Sessions will not survive restart.');
+}
+
+allowedEmailHashes = loadAllowlist(DEPT_ALLOWLIST_FILE);
+if (allowedEmailHashes === null) {
+  console.warn(
+    `[warn] allowlist file ${DEPT_ALLOWLIST_FILE} not found — registration is open to any ${REGISTER_DOMAIN} address.`
+  );
+} else {
+  console.log(`[allowlist] loaded ${allowedEmailHashes.size} entries from ${DEPT_ALLOWLIST_FILE}`);
 }
 
 const app = express();
@@ -113,10 +181,16 @@ function postPreviewSql(alias = '') {
 }
 
 const Q = {
-  findUserByName:  db.prepare('SELECT id, username, password_hash, is_admin FROM users WHERE username = ? COLLATE NOCASE'),
+  findUserByName:  db.prepare('SELECT id, username, password_hash, is_admin, display_name FROM users WHERE username = ? COLLATE NOCASE'),
   usernameExists:  db.prepare('SELECT 1 FROM users WHERE username = ? COLLATE NOCASE'),
   isUserAdmin:     db.prepare('SELECT is_admin FROM users WHERE id = ?'),
-  listAdminHandles: db.prepare('SELECT username FROM users WHERE is_admin = 1 ORDER BY username COLLATE NOCASE ASC'),
+  // Admin "handles" are their display_name (Admin01…); regular users have
+  // no public handle by design. Sorted so mention autocomplete is stable.
+  listAdminHandles: db.prepare(
+    `SELECT display_name FROM users
+     WHERE is_admin = 1 AND display_name IS NOT NULL
+     ORDER BY display_name COLLATE NOCASE ASC`
+  ),
   insertUser:      db.prepare('INSERT INTO users (username, password_hash, created_at) VALUES (?, ?, ?)'),
   findUserQuota:   db.prepare('SELECT tokens_issued_date, tokens_issued_count FROM users WHERE id = ?'),
   bumpTokenCount:  db.prepare('UPDATE users SET tokens_issued_date = ?, tokens_issued_count = ? WHERE id = ?'),
@@ -305,6 +379,19 @@ const Q = {
      ORDER BY unread DESC, fp.followed_at DESC
      LIMIT ${FEED_LIMIT}`
   ),
+  findEmailCode:   db.prepare('SELECT code_hash, expires_at, attempts, created_at FROM email_codes WHERE email = ?'),
+  upsertEmailCode: db.prepare(
+    `INSERT INTO email_codes (email, code_hash, expires_at, attempts, created_at)
+     VALUES (?, ?, ?, 0, ?)
+     ON CONFLICT(email) DO UPDATE SET
+       code_hash = excluded.code_hash,
+       expires_at = excluded.expires_at,
+       attempts = 0,
+       created_at = excluded.created_at`
+  ),
+  bumpEmailCodeAttempts: db.prepare('UPDATE email_codes SET attempts = attempts + 1 WHERE email = ?'),
+  deleteEmailCode: db.prepare('DELETE FROM email_codes WHERE email = ?'),
+  purgeEmailCodes: db.prepare('DELETE FROM email_codes WHERE expires_at < ?'),
 };
 
 const REACTION_KINDS = ['👍', '❤️', '😂', '😮', '😢', '🎉'];
@@ -315,7 +402,7 @@ const MENTION_IN_CONTENT_RE = /@([A-Za-z0-9_]{3,32})/g;
 function extractMentionTargets(text) {
   if (typeof text !== 'string') return [];
   const adminHandles = new Map(
-    Q.listAdminHandles.all().map((row) => [row.username.toLowerCase(), row.username])
+    Q.listAdminHandles.all().map((row) => [row.display_name.toLowerCase(), row.display_name])
   );
   const set = new Set();
   let m;
@@ -463,9 +550,17 @@ function parseId(req, res, key = 'id') {
   return id;
 }
 
-function validateCredentials(username, password) {
-  if (typeof username !== 'string' || typeof password !== 'string') return '请求格式错误';
-  if (!/^[A-Za-z0-9_]{3,32}$/.test(username)) return '用户名需为 3–32 位字符（仅限 A-Z、a-z、0-9、_）';
+const EMAIL_RE = /^[^\s@]{1,64}@[^\s@]{1,255}\.[^\s@]{1,24}$/;
+
+function parseEmail(raw) {
+  if (typeof raw !== 'string') return { email: '', error: '请求格式错误' };
+  const email = raw.trim().toLowerCase();
+  if (!EMAIL_RE.test(email)) return { email, error: '邮箱格式不正确' };
+  return { email, error: null };
+}
+
+function validatePassword(password) {
+  if (typeof password !== 'string') return '请求格式错误';
   if (password.length < 8 || password.length > 128) return '密码长度需在 8–128 位之间';
   return null;
 }
@@ -541,39 +636,109 @@ const clearMentionsForComment = db.prepare(
 
 // Auth
 
+// ALWAYS replies ok:true for a syntactically valid email. Allowlist,
+// already-registered, and throttle checks run in the background so the
+// response is opaque — otherwise an attacker could enumerate the
+// department roster by probing this endpoint.
+app.post('/api/send-code', rateLimit('send-code', 5), (req, res) => {
+  const { email, error } = parseEmail(req.body && req.body.email);
+  if (error) return res.status(400).json({ error });
+  setImmediate(() => processSendCode(email));
+  res.json({ ok: true });
+});
+
+// Atomically claim a per-email send slot: the throttle read and the
+// upsert share one transaction so two concurrent requests can't both
+// pass the 60s check and each trigger a paid Resend send.
+const claimSendCodeSlotTx = db.transaction((email, codeHash, now) => {
+  if (Q.usernameExists.get(email)) return false;
+  const existing = Q.findEmailCode.get(email);
+  if (existing && now - existing.created_at < RATE_WINDOW_MS) return false;
+  Q.upsertEmailCode.run(email, codeHash, now + EMAIL_CODE_TTL_MS, now);
+  return true;
+});
+
+async function processSendCode(email) {
+  try {
+    if (!isAllowedEmail(email)) return;
+    const code = String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
+    if (!claimSendCodeSlotTx(email, hashToken(code), Date.now())) return;
+    try {
+      await sendVerificationEmail(email, code);
+    } catch (e) {
+      console.error('[send-code] send failed:', e.message);
+      Q.deleteEmailCode.run(email);
+    }
+  } catch (e) {
+    console.error('[send-code] background error:', e.message);
+  }
+}
+
 app.post('/api/register', rateLimit('register', 5), async (req, res) => {
-  const { username, password } = req.body || {};
-  const err = validateCredentials(username, password);
+  const { email, error } = parseEmail(req.body && req.body.email);
+  const { password, password_confirm, code } = req.body || {};
+  const err = error || validatePassword(password);
   if (err) return res.status(400).json({ error: err });
-  if (Q.usernameExists.get(username)) return res.status(409).json({ error: '用户名已被占用' });
+  if (password !== password_confirm) {
+    return res.status(400).json({ error: '两次输入的密码不一致' });
+  }
+  // All code-related failures collapse into one message so a probe can't
+  // distinguish "not in allowlist" from "wrong code" and learn roster
+  // membership.
+  const badCode = { error: '验证码无效或已过期' };
+  if (typeof code !== 'string' || !/^\d{6}$/.test(code)) {
+    return res.status(400).json(badCode);
+  }
+  if (Q.usernameExists.get(email)) return res.status(409).json({ error: '邮箱已被注册' });
+
+  const codeRow = Q.findEmailCode.get(email);
+  const now = Date.now();
+  if (!codeRow || codeRow.expires_at < now) {
+    return res.status(400).json(badCode);
+  }
+  if (codeRow.attempts >= EMAIL_CODE_MAX_ATTEMPTS) {
+    Q.deleteEmailCode.run(email);
+    return res.status(400).json(badCode);
+  }
+  if (codeRow.code_hash !== hashToken(code)) {
+    Q.bumpEmailCodeAttempts.run(email);
+    return res.status(400).json(badCode);
+  }
+  // Re-check allowlist in case the roster changed between send and register.
+  if (!isAllowedEmail(email)) return res.status(400).json(badCode);
 
   const hash = await bcrypt.hash(password, 12);
   let info;
   try {
-    info = Q.insertUser.run(username, hash, Date.now());
+    info = Q.insertUser.run(email, hash, Date.now());
   } catch (e) {
     // Catches the concurrent-register race: two requests passed the
     // usernameExists check and both tried to INSERT; the unique index
     // rejects the second one.
     if (e.code === 'SQLITE_CONSTRAINT_UNIQUE') {
-      return res.status(409).json({ error: '用户名已被占用' });
+      return res.status(409).json({ error: '邮箱已被注册' });
     }
     throw e;
   }
-  issueSession(res, info.lastInsertRowid, username, false);
+  Q.deleteEmailCode.run(email);
+  issueSession(res, info.lastInsertRowid, email, false);
   res.json({ ok: true });
 });
 
 app.post('/api/login', rateLimit('login', 10), async (req, res) => {
-  const { username, password } = req.body || {};
-  if (typeof username !== 'string' || typeof password !== 'string') {
-    return res.status(400).json({ error: '请求格式错误' });
+  const { email } = parseEmail(req.body && req.body.email);
+  const password = req.body && req.body.password;
+  if (!email || typeof password !== 'string') {
+    return res.status(401).json({ error: '邮箱或密码错误' });
   }
-  const row = Q.findUserByName.get(username);
+  const row = Q.findUserByName.get(email);
   const ok = await bcrypt.compare(password, row ? row.password_hash : DUMMY_BCRYPT_HASH);
-  if (!row || !ok) return res.status(401).json({ error: '用户名或密码错误' });
-  // Use the DB's canonical casing, not whatever the client typed.
-  issueSession(res, row.id, row.username, !!row.is_admin);
+  if (!row || !ok) return res.status(401).json({ error: '邮箱或密码错误' });
+  // Admins get their public display_name (Admin01…); for regular users
+  // the handle is only ever the user's own email in their account view —
+  // never written alongside content.
+  const handle = row.is_admin && row.display_name ? row.display_name : row.username;
+  issueSession(res, row.id, handle, !!row.is_admin);
   res.json({ ok: true });
 });
 
@@ -600,7 +765,7 @@ app.get('/api/me', requireSession, (req, res) => {
   res.json({
     username: req.user.u,
     admin,
-    admin_handles: Q.listAdminHandles.all().map((row) => row.username),
+    admin_handles: Q.listAdminHandles.all().map((row) => row.display_name),
     tokens_remaining: q.remaining,
     max_tokens_per_day: q.max,
     unlimited_tokens: !!q.unlimited,
@@ -1150,10 +1315,11 @@ function rotate() {
   const ch = Q.orphanCmtHashes.run();
   const m = Q.purgeMentions.run(mentionCutoff);
   const r = Q.purgeRevoked.run(now);
-  if (t.changes + m.changes + ph.changes + ch.changes + r.changes > 0) {
+  const e = Q.purgeEmailCodes.run(now);
+  if (t.changes + m.changes + ph.changes + ch.changes + r.changes + e.changes > 0) {
     console.log(
       `[rotate] purged ${t.changes} tokens, ${m.changes} mentions, ` +
-      `${r.changes} revoked sessions, ` +
+      `${r.changes} revoked sessions, ${e.changes} email codes, ` +
       `orphaned ${ph.changes} post / ${ch.changes} comment hashes`
     );
   }

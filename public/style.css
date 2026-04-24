@@ -1410,6 +1410,12 @@ button.ghost.small.danger:hover {
 .row { display: flex; gap: 10px; }
 .row button { flex: 1; }
 
+.code-row { display: flex; gap: 10px; }
+.code-row input { flex: 1; min-width: 0; }
+.code-row button { flex: 0 0 auto; }
+
+.auth-info { font-size: 12.5px; min-height: 1em; margin-top: 4px; color: var(--accent); }
+
 .err {
   color: var(--danger);
   font-size: 12.5px;

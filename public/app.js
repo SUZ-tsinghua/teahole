@@ -440,20 +440,95 @@ async function logout() {
   refreshMe();
 }
 
-async function authSubmit(endpoint) {
+let sendCodeCooldownIv = null;
+
+function stopSendCodeCooldown() {
+  if (sendCodeCooldownIv) {
+    clearInterval(sendCodeCooldownIv);
+    sendCodeCooldownIv = null;
+  }
+  const btn = $('#send-code-btn');
+  btn.textContent = '发送';
+  btn.disabled = false;
+}
+
+function setAuthMode(mode) {
+  const f = $('#login-form');
+  f.dataset.mode = mode;
+  const register = mode === 'register';
+  $('#code-row').hidden = !register;
+  const confirm = $('#password-confirm');
+  confirm.hidden = !register;
+  confirm.required = register;
+  $('#auth-submit').textContent = register ? '创建账号' : '登录';
+  $('#register-btn').textContent = register ? '返回登录' : '注册';
+  f.password.autocomplete = register ? 'new-password' : 'current-password';
+  $('#auth-err').textContent = '';
+  $('#auth-info').textContent = '';
+  stopSendCodeCooldown();
+}
+
+async function authSubmit() {
   $('#auth-err').textContent = '';
   const f = $('#login-form');
+  const mode = f.dataset.mode || 'login';
   try {
-    await api('POST', endpoint, { username: f.username.value, password: f.password.value });
+    if (mode === 'register') {
+      await api('POST', '/api/register', {
+        email: f.email.value,
+        password: f.password.value,
+        password_confirm: f.password_confirm.value,
+        code: f.code.value,
+      });
+    } else {
+      await api('POST', '/api/login', {
+        email: f.email.value,
+        password: f.password.value,
+      });
+    }
     f.reset();
+    setAuthMode('login');
     refreshMe();
   } catch (err) {
     $('#auth-err').textContent = err.message;
   }
 }
 
-$('#login-form').addEventListener('submit', (e) => { e.preventDefault(); authSubmit('/api/login'); });
-$('#register-btn').addEventListener('click', () => authSubmit('/api/register'));
+async function sendCode() {
+  const f = $('#login-form');
+  const btn = $('#send-code-btn');
+  $('#auth-err').textContent = '';
+  $('#auth-info').textContent = '';
+  if (!f.email.value) {
+    $('#auth-err').textContent = '请先填写邮箱';
+    return;
+  }
+  btn.disabled = true;
+  try {
+    await api('POST', '/api/send-code', { email: f.email.value });
+    $('#auth-info').textContent = '验证码已发送，请查收邮箱（10 分钟内有效）';
+    // Mirror the server's 60s per-email throttle in the UI.
+    stopSendCodeCooldown();
+    let left = 60;
+    btn.textContent = `${left}s`;
+    btn.disabled = true;
+    sendCodeCooldownIv = setInterval(() => {
+      left -= 1;
+      if (left <= 0) stopSendCodeCooldown();
+      else btn.textContent = `${left}s`;
+    }, 1000);
+  } catch (err) {
+    $('#auth-err').textContent = err.message;
+    btn.disabled = false;
+  }
+}
+
+$('#login-form').addEventListener('submit', (e) => { e.preventDefault(); authSubmit(); });
+$('#register-btn').addEventListener('click', () => {
+  const cur = $('#login-form').dataset.mode || 'login';
+  setAuthMode(cur === 'register' ? 'login' : 'register');
+});
+$('#send-code-btn').addEventListener('click', sendCode);
 
 async function issueNewToken(errNode) {
   errNode.textContent = '';
