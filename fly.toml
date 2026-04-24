@@ -5,8 +5,10 @@
 #   fly launch --no-deploy           (creates the app, keep this file)
 #   fly volumes create teahole_data --region <region> --size 1
 #   fly secrets set JWT_SECRET=$(openssl rand -hex 32) \
-#                   RESEND_API_KEY=re_...               \
-#                   RESEND_FROM='茶园树洞 <noreply@yourdomain>'
+#                   GMAIL_USER=you@gmail.com            \
+#                   GMAIL_APP_PASSWORD='xxxx xxxx xxxx xxxx'
+#   # (GMAIL_APP_PASSWORD is a 16-char app password from Google Account →
+#   # Security → 2-Step Verification → App passwords, NOT your login password.)
 #   # Seed the allowlist on the volume (one-shot):
 #   fly ssh console -C 'sh -c "cat > /data/dept-allowlist.txt"' < dept-allowlist.txt
 #   fly deploy
@@ -15,7 +17,7 @@
 #   git commit ... && fly deploy
 
 app = "teahole"
-primary_region = "nrt"  # Tokyo; change to your nearest region (sea/sin/hkg).
+primary_region = "sin"  # Singapore; change to your nearest region (sea/sin/hkg).
 
 [build]
   dockerfile = "Dockerfile"
@@ -44,4 +46,4 @@ primary_region = "nrt"  # Tokyo; change to your nearest region (sea/sin/hkg).
 
 [[vm]]
   size = "shared-cpu-1x"
-  memory = "512mb"
+  memory = "256mb"
