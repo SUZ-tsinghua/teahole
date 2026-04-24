@@ -1,15 +1,12 @@
-# One entry per line. # starts a comment; blank lines are ignored.
-# Entries can be either a bare local part (the REGISTER_DOMAIN is appended)
-# or a full email.
+# One full email per line. # starts a comment; blank lines are ignored.
 #
-#   alice
+#   alice@example.com
 #   bob@mails.tsinghua.edu.cn
 #
-# This file is loaded at startup and HMAC-hashed into memory; the raw
-# contents are never stored in the DB or logged. To deploy, copy this file
-# to `dept-allowlist.txt` (gitignored) and add your roster. The server
-# warns at startup if the file is missing.
+# This file is loaded at startup and sha256-hashed into memory; the raw
+# contents are never stored in the DB or logged. To deploy, copy this
+# file to `dept-allowlist.txt` (gitignored) and add your roster.
+# Registration is disabled entirely if the file is missing.
 
-zhangsan
-lisi
-wangwu@mails.tsinghua.edu.cn
+alice@example.com
+bob@mails.tsinghua.edu.cn

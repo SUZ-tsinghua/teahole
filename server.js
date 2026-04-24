@@ -11,7 +11,6 @@ const db = require('./db');
 
 const EMAIL_CODE_TTL_MS = 10 * 60 * 1000;
 const EMAIL_CODE_MAX_ATTEMPTS = 5;
-const REGISTER_DOMAIN = (process.env.REGISTER_DOMAIN || '@mails.tsinghua.edu.cn').toLowerCase();
 const DEPT_ALLOWLIST_FILE =
   process.env.DEPT_ALLOWLIST_FILE || path.join(__dirname, 'dept-allowlist.txt');
 
@@ -36,17 +35,17 @@ function loadAllowlist(filePath) {
   for (const raw of fs.readFileSync(filePath, 'utf8').split('\n')) {
     const line = raw.replace(/#.*/, '').trim().toLowerCase();
     if (!line) continue;
-    const email = line.includes('@') ? line : line + REGISTER_DOMAIN;
-    hashes.add(hashToken(email));
+    hashes.add(hashToken(line));
   }
   return hashes;
 }
 
 let allowedEmailHashes = null;
 
+// Fail-closed: no allowlist file = no one can register. The roster is
+// the single gate; there is no domain fallback.
 function isAllowedEmail(email) {
-  if (!email.endsWith(REGISTER_DOMAIN)) return false;
-  if (allowedEmailHashes === null) return true;
+  if (allowedEmailHashes === null) return false;
   return allowedEmailHashes.has(hashToken(email));
 }
 
@@ -116,7 +115,7 @@ if (!process.env.JWT_SECRET) {
 allowedEmailHashes = loadAllowlist(DEPT_ALLOWLIST_FILE);
 if (allowedEmailHashes === null) {
   console.warn(
-    `[warn] allowlist file ${DEPT_ALLOWLIST_FILE} not found — registration is open to any ${REGISTER_DOMAIN} address.`
+    `[warn] allowlist file ${DEPT_ALLOWLIST_FILE} not found — registration is disabled until it exists.`
   );
 } else {
   console.log(`[allowlist] loaded ${allowedEmailHashes.size} entries from ${DEPT_ALLOWLIST_FILE}`);
