@@ -27,6 +27,13 @@
     <span class="brand-sub">登录才能看见，默认发帖不留身份</span>
   </div>
   <div class="header-actions">
+    <button id="sidebar-toggle" class="icon-btn sidebar-toggle" type="button" aria-label="展开侧边栏" aria-expanded="false" aria-controls="sidebar" title="菜单">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="4" y1="7" x2="20" y2="7"/>
+        <line x1="4" y1="12" x2="20" y2="12"/>
+        <line x1="4" y1="17" x2="20" y2="17"/>
+      </svg>
+    </button>
     <button id="help-btn" class="icon-btn" type="button" aria-label="新手指引" title="新手指引">？</button>
     <button id="theme-toggle" class="icon-btn" type="button" aria-label="切换主题" title="切换亮/暗主题">
       <svg class="sun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -67,7 +74,8 @@
 
   <!-- SECTION: forum-view -->
   <section id="forum-view" class="layout" hidden>
-    <aside class="sidebar">
+    <div id="sidebar-backdrop" class="sidebar-backdrop" hidden></div>
+    <aside id="sidebar" class="sidebar">
       <div class="sidebar-head">
         <button id="compose-btn" class="compose-btn">
           <span class="plus">＋</span> 发新帖

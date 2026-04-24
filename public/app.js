@@ -69,6 +69,17 @@ $('#theme-toggle').addEventListener('click', () => {
   applyTheme(cur === 'dark' ? 'light' : 'dark');
 });
 
+// Mobile sidebar drawer: hamburger toggle + backdrop dismissal.
+$('#sidebar-toggle').addEventListener('click', () => {
+  const sb = document.getElementById('sidebar');
+  if (sb && sb.classList.contains('open')) closeSidebarDrawer();
+  else openSidebarDrawer();
+});
+$('#sidebar-backdrop').addEventListener('click', () => closeSidebarDrawer());
+window.addEventListener('resize', () => {
+  if (!isMobileViewport()) closeSidebarDrawer();
+});
+
 async function api(method, path, body) {
   const res = await fetch(path, {
     method,
@@ -245,13 +256,39 @@ function showReader(which) {
     for (const id of Object.values(VIEW)) viewNodes[id].hidden = id !== which;
     currentView = which;
   }
-  if (window.innerWidth <= 760) {
-    // Reader holds the feed too, so on mobile keep it closed only when
-    // showing the unfiltered default feed — the sidebar nav is the
-    // landing surface in that state.
-    const isDefaultFeed = which === VIEW.EMPTY && filterState.kind == null;
-    readerNode.classList.toggle('open', !isDefaultFeed);
-  }
+  // Opening a view on mobile should retract the sidebar drawer if the user
+  // navigated via a sidebar link.
+  if (window.innerWidth <= 760) closeSidebarDrawer();
+}
+
+function isMobileViewport() {
+  return window.innerWidth <= 760;
+}
+
+function openSidebarDrawer() {
+  const sb = $('#sidebar');
+  const bd = $('#sidebar-backdrop');
+  const btn = $('#sidebar-toggle');
+  if (!sb || !bd) return;
+  sb.classList.add('open');
+  bd.hidden = false;
+  // Force reflow so the opacity transition runs from 0.
+  void bd.offsetWidth;
+  bd.classList.add('open');
+  if (btn) btn.setAttribute('aria-expanded', 'true');
+}
+
+function closeSidebarDrawer() {
+  const sb = $('#sidebar');
+  const bd = $('#sidebar-backdrop');
+  const btn = $('#sidebar-toggle');
+  if (!sb || !bd) return;
+  if (!sb.classList.contains('open')) return;
+  sb.classList.remove('open');
+  bd.classList.remove('open');
+  const hideBackdrop = () => { bd.hidden = true; };
+  setTimeout(hideBackdrop, 220);
+  if (btn) btn.setAttribute('aria-expanded', 'false');
 }
 
 function closeReader() {

@@ -66,6 +66,9 @@ header {
 :root[data-theme="dark"] .icon-btn .moon,
 :root[data-theme="light"] .icon-btn .sun { display: none; }
 
+/* Sidebar toggle: mobile-only hamburger in the header (overrides .icon-btn). */
+.sidebar-toggle { display: none; }
+
 #userbar { display: flex; gap: 8px; align-items: center; font-size: 13px; }
 #userbar .user-pill {
   padding: 4px 11px;
