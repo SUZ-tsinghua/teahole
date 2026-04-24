@@ -1,0 +1,34 @@
+/* ============================================================
+   Auth view
+   ============================================================ */
+.auth {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: 24px;
+  overflow: auto;
+}
+.auth-card {
+  width: 100%;
+  max-width: 400px;
+  background: var(--glass-strong);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  padding: 32px;
+  box-shadow: var(--shadow-lg);
+  backdrop-filter: saturate(180%) blur(40px);
+  -webkit-backdrop-filter: saturate(180%) blur(40px);
+}
+.auth-card h2 {
+  font-size: 22px;
+  font-weight: 700;
+  margin: 0 0 6px;
+  letter-spacing: -0.02em;
+  color: var(--fg);
+}
+.auth-card .muted {
+  margin-bottom: 20px;
+  font-size: 13px;
+  line-height: 1.5;
+}
