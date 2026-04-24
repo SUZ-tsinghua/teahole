@@ -141,6 +141,7 @@
         <div id="thread-channel" class="thread-channel" hidden></div>
         <div id="thread-body" class="prose"></div>
         <div id="thread-actions" class="thread-actions" hidden></div>
+        <div id="thread-poll" class="poll" hidden></div>
         <div id="reactions" class="reactions"></div>
         <h3>评论</h3>
         <div id="comments"></div>
@@ -200,7 +201,17 @@
           <textarea name="content" placeholder="分享点什么..." required maxlength="10000"></textarea>
           <div class="compose-toolbar">
             <button type="button" id="post-image-btn" class="ghost small">📷 插入图片</button>
+            <button type="button" id="post-poll-btn" class="ghost small" aria-expanded="false">🗳️ 添加投票</button>
             <span id="post-image-status" class="muted compose-hint"></span>
+          </div>
+          <div id="poll-builder" class="poll-builder" hidden>
+            <input name="poll_question" placeholder="投票问题（如：几点有空？）" maxlength="200" autocomplete="off">
+            <div id="poll-options" class="poll-options-edit"></div>
+            <div class="poll-builder-actions">
+              <button type="button" id="poll-add-option" class="ghost small">+ 新增选项</button>
+              <button type="button" id="poll-remove" class="ghost small danger">移除投票</button>
+            </div>
+            <p class="muted poll-hint">至少 2 个选项，最多 10 个。没投票的人看不到结果；投完后才显示人数和比例。</p>
           </div>
           <div class="form-actions">
             <button type="submit" id="post-submit">匿名发布</button>

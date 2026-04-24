@@ -12,7 +12,7 @@
 //   SECTION: token-core        resolveToken — single path from token→pseudonym
 //   SECTION: routes:auth       /api/send-code /register /login /logout /me
 //   SECTION: routes:token      /api/token (mint posting token + quota)
-//   SECTION: routes:posts      CRUD, reactions, comments
+//   SECTION: routes:posts      CRUD, reactions, comments, poll votes
 //   SECTION: routes:uploads    image upload + serve
 //   SECTION: routes:saved      saved-posts + followed-posts
 //   SECTION: routes:channels   channel admin + per-user prefs
@@ -114,6 +114,10 @@ const SEARCH_LIMIT = 50;
 const SEARCH_MIN_CHARS = 3;
 const MENTIONS_LIMIT = 50;
 const RSS_LIMIT = 50;
+const POLL_QUESTION_MAX = 200;
+const POLL_OPTION_MAX = 80;
+const POLL_OPTIONS_MIN = 2;
+const POLL_OPTIONS_MAX = 10;
 const MAX_UPLOAD_BYTES = 4 * 1024 * 1024;
 const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(DATA_DIR, 'uploads');
 const UPLOAD_EXT_FOR_MIME = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' };
@@ -327,6 +331,15 @@ const Q = {
   insertReaction:  db.prepare('INSERT INTO reactions (post_id, token_hash, kind, created_at) VALUES (?, ?, ?, ?)'),
   deleteReaction:  db.prepare('DELETE FROM reactions WHERE post_id = ? AND token_hash = ? AND kind = ?'),
   countReactions:  db.prepare('SELECT kind, COUNT(*) AS n FROM reactions WHERE post_id = ? GROUP BY kind'),
+  insertPoll:      db.prepare('INSERT INTO polls (post_id, question, created_at) VALUES (?, ?, ?)'),
+  insertPollOption: db.prepare('INSERT INTO poll_options (poll_id, position, label) VALUES (?, ?, ?)'),
+  getPollByPost:   db.prepare('SELECT id, question FROM polls WHERE post_id = ?'),
+  listPollOptions: db.prepare('SELECT id, position, label FROM poll_options WHERE poll_id = ? ORDER BY position ASC, id ASC'),
+  findPollVote:    db.prepare('SELECT option_id FROM poll_votes WHERE poll_id = ? AND token_hash = ?'),
+  optionInPoll:    db.prepare('SELECT 1 FROM poll_options WHERE id = ? AND poll_id = ?'),
+  insertPollVote:  db.prepare('INSERT INTO poll_votes (poll_id, token_hash, option_id, created_at) VALUES (?, ?, ?, ?)'),
+  countPollVotes:  db.prepare('SELECT option_id, COUNT(*) AS n FROM poll_votes WHERE poll_id = ? GROUP BY option_id'),
+  deletePollForPost: db.prepare('DELETE FROM polls WHERE post_id = ?'),
   insertMention:   db.prepare('INSERT INTO mentions (target_pseudonym, post_id, comment_id, created_at) VALUES (?, ?, ?, ?)'),
   listMentions:    db.prepare(
     `SELECT m.id, m.post_id, m.comment_id, m.created_at,
@@ -590,6 +603,71 @@ const toggleReactionTx = db.transaction((postId, tokenHash, kind) => {
   } else {
     Q.insertReaction.run(postId, tokenHash, kind, Date.now());
   }
+});
+
+function parsePollInput(poll) {
+  if (poll == null) return { ok: true, poll: null };
+  if (typeof poll !== 'object') return { ok: false, error: '投票格式错误' };
+  const question = sanitizeText(poll.question, POLL_QUESTION_MAX);
+  if (!question) return { ok: false, error: '投票问题不能为空' };
+  if (!Array.isArray(poll.options)) return { ok: false, error: '投票选项格式错误' };
+  const seen = new Set();
+  const options = [];
+  for (const raw of poll.options) {
+    const label = sanitizeText(raw, POLL_OPTION_MAX);
+    if (!label || seen.has(label)) continue;
+    seen.add(label);
+    options.push(label);
+    if (options.length > POLL_OPTIONS_MAX) break;
+  }
+  if (options.length < POLL_OPTIONS_MIN) {
+    return { ok: false, error: `投票至少需要 ${POLL_OPTIONS_MIN} 个不重复选项` };
+  }
+  return { ok: true, poll: { question, options } };
+}
+
+const createPollTx = db.transaction((postId, question, options, createdAt) => {
+  const info = Q.insertPoll.run(postId, question, createdAt);
+  const pollId = info.lastInsertRowid;
+  for (let i = 0; i < options.length; i++) {
+    Q.insertPollOption.run(pollId, i, options[i]);
+  }
+});
+
+// Counts/total/my_option_id are filled ONLY when the caller's token already
+// has a vote row recorded — that's the single privacy gate. tokenHash may
+// be null for anonymous reads.
+function pollViewFor(postId, tokenHash) {
+  const poll = Q.getPollByPost.get(postId);
+  if (!poll) return null;
+  const options = Q.listPollOptions.all(poll.id).map(
+    (o) => ({ id: o.id, position: o.position, label: o.label })
+  );
+  const base = { id: poll.id, question: poll.question, options };
+  if (!tokenHash) return { ...base, voted: false };
+  const my = Q.findPollVote.get(poll.id, tokenHash);
+  if (!my) return { ...base, voted: false };
+  const counts = new Map(options.map((o) => [o.id, 0]));
+  let total = 0;
+  for (const row of Q.countPollVotes.all(poll.id)) {
+    counts.set(row.option_id, row.n);
+    total += row.n;
+  }
+  return {
+    ...base,
+    voted: true,
+    my_option_id: my.option_id,
+    total,
+    counts: options.map((o) => ({ option_id: o.id, votes: counts.get(o.id) || 0 })),
+  };
+}
+
+// Concurrent submits from the same token would otherwise race past the
+// findPollVote check and trip the PK constraint with a 500.
+const castVoteTx = db.transaction((pollId, tokenHash, optionId) => {
+  if (Q.findPollVote.get(pollId, tokenHash)) return false;
+  Q.insertPollVote.run(pollId, tokenHash, optionId, Date.now());
+  return true;
 });
 
 // Admins post non-anonymously under their username, so their rotations
@@ -977,7 +1055,7 @@ app.get('/api/posts', requireSession, (req, res) => {
 });
 
 app.post('/api/posts', requireSession, (req, res) => {
-  const { token, title, content, channel_id } = req.body || {};
+  const { token, title, content, channel_id, poll } = req.body || {};
   const resolved = resolveToken(token);
   if (!resolved) return res.status(401).json({ error: '发帖令牌无效或已过期' });
   const publicHandle = publicHandleFor(req.user, resolved.authorKey);
@@ -986,10 +1064,15 @@ app.post('/api/posts', requireSession, (req, res) => {
   if (!t || !c) return res.status(400).json({ error: '标题和内容不能为空' });
   const ch = resolveChannelInput(channel_id);
   if (!ch.ok) return res.status(400).json({ error: ch.error });
+  const pollParsed = parsePollInput(poll);
+  if (!pollParsed.ok) return res.status(400).json({ error: pollParsed.error });
 
   const createdAt = Date.now();
   const info = Q.insertPost.run(publicHandle, t, c, createdAt, resolved.tokenHash, ch.channelId);
   recordMentionsForPost(info.lastInsertRowid, c, createdAt);
+  if (pollParsed.poll) {
+    createPollTx(info.lastInsertRowid, pollParsed.poll.question, pollParsed.poll.options, createdAt);
+  }
 
   res.json({
     id: info.lastInsertRowid,
@@ -1014,6 +1097,7 @@ app.get('/api/posts/:id', requireSession, (req, res) => {
     post: safePost,
     comments,
     reactions: reactionCountsFor(id),
+    poll: post.deleted_at ? null : pollViewFor(id, null),
   });
 });
 
@@ -1028,6 +1112,30 @@ app.post('/api/posts/:id/reactions', requireSession, (req, res) => {
   }
   toggleReactionTx(id, resolved.tokenHash, kind);
   res.json({ reactions: reactionCountsFor(id) });
+});
+
+// Vote once + locked in. A missing option_id means "tell me my state",
+// which is how the client reveals results after a prior vote in another
+// session — see myVoteFor in public/app.js.
+app.post('/api/posts/:id/vote', requireSession, (req, res) => {
+  const id = parseId(req, res); if (id == null) return;
+  const { token, option_id } = req.body || {};
+  const resolved = resolveToken(token);
+  if (!resolved) return res.status(401).json({ error: '发帖令牌无效或已过期' });
+  if (!Q.isPostAlive.get(id)) {
+    return res.status(Q.postExists.get(id) ? 410 : 404).json({ error: '帖子已删除或未找到' });
+  }
+  const poll = Q.getPollByPost.get(id);
+  if (!poll) return res.status(404).json({ error: '该帖子没有投票' });
+  if (option_id != null) {
+    if (!Number.isInteger(option_id) || !Q.optionInPoll.get(option_id, poll.id)) {
+      return res.status(400).json({ error: '无效的选项' });
+    }
+    if (!castVoteTx(poll.id, resolved.tokenHash, option_id)) {
+      return res.status(409).json({ error: '你已经投过票了' });
+    }
+  }
+  res.json({ poll: pollViewFor(id, resolved.tokenHash) });
 });
 
 app.post('/api/posts/:id/comments', requireSession, (req, res) => {
@@ -1100,6 +1208,7 @@ app.put('/api/posts/:pid/comments/:id', requireSession, (req, res) => {
 function tombstonePost(id) {
   clearMentionsForPost.run(id);
   Q.clearReactionsForPost.run(id);
+  Q.deletePollForPost.run(id);
 }
 
 app.delete('/api/posts/:id', requireSession, (req, res) => {

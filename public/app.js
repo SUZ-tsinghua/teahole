@@ -16,6 +16,7 @@
 //   SECTION: bulletins          bulletin list + admin dialog
 //   SECTION: docs               shared-doc list/reader/editor
 //   SECTION: compose-upload     image picker wiring for the composer
+//   SECTION: poll               composer poll builder + reader renderer
 //   SECTION: post-card          post preview card renderer
 //   SECTION: search             search input + results
 //   SECTION: compose            composer panel
@@ -34,6 +35,7 @@
 const TOKEN_STORE_KEY = 'teahole.token';
 const THEME_STORE_KEY = 'teahole.theme';
 const MY_REACTIONS_KEY = 'teahole.myReactions';
+const MY_VOTES_KEY = 'teahole.myVotes';
 const MENTIONS_SEEN_KEY = 'teahole.mentionsSeen';
 const HELP_SEEN_KEY = 'teahole.helpSeen';
 const SIDEBAR_WIDTH_KEY = 'teahole.sidebarWidth';
@@ -139,6 +141,26 @@ function setMyReaction(pseudonym, postId, kind, on) {
   if (next.length) byPost[postId] = next; else delete byPost[postId];
   if (!Object.keys(byPost).length) delete all[pseudonym];
   localStorage.setItem(MY_REACTIONS_KEY, JSON.stringify(all));
+}
+
+// "Did I vote?" mirrors the reactions hint above: a client-side flag, keyed
+// by pseudonym, that gates the second roundtrip to fetch results. The server
+// is still the only source of truth for whether results are revealed.
+function myVoteFor(pseudonym, postId) {
+  if (!pseudonym) return null;
+  try {
+    const all = JSON.parse(localStorage.getItem(MY_VOTES_KEY) || '{}');
+    return (all[pseudonym] && all[pseudonym][postId]) || null;
+  } catch { return null; }
+}
+function setMyVote(pseudonym, postId, optionId) {
+  if (!pseudonym) return;
+  let all;
+  try { all = JSON.parse(localStorage.getItem(MY_VOTES_KEY) || '{}'); }
+  catch { all = {}; }
+  const byPost = all[pseudonym] || (all[pseudonym] = {});
+  byPost[postId] = optionId;
+  localStorage.setItem(MY_VOTES_KEY, JSON.stringify(all));
 }
 
 // SECTION: mention-state
@@ -1818,6 +1840,7 @@ function openCompose() {
   const f = $('#post-form');
   f.reset();
   renderComposeChannels();
+  resetPollBuilder();
   $('.compose-hint').textContent = isAdmin
     ? '管理员发言会直接显示用户名；其他令牌能力仍按 24 小时窗口管理。'
     : '服务器只记录令牌的哈希，无法把帖子和你连起来。';
@@ -1841,11 +1864,15 @@ $('#post-form').addEventListener('submit', async (e) => {
   const f = e.target;
   const rawCh = f.channel_id && f.channel_id.value;
   const channel_id = rawCh ? parseInt(rawCh, 10) : null;
+  const poll = collectPollInput();
+  if (poll && poll.error) { $('#post-err').textContent = poll.error; return; }
   try {
     const created = await api('POST', '/api/posts', {
       token: t.token, title: f.title.value, content: f.content.value, channel_id,
+      poll: poll ? poll.value : null,
     });
     f.reset();
+    resetPollBuilder();
     const feed = $('#feed');
     const emptyMsg = feed.querySelector('.feed-empty');
     if (emptyMsg) emptyMsg.remove();
@@ -1858,6 +1885,196 @@ $('#post-form').addEventListener('submit', async (e) => {
     $('#post-err').textContent = err.message;
   }
 });
+
+// SECTION: poll
+// --- Poll: composer builder + thread renderer ---
+const POLL_OPTIONS_MIN = 2;
+const POLL_OPTIONS_MAX = 10;
+
+function resetPollBuilder() {
+  const wrap = $('#poll-builder');
+  const btn = $('#post-poll-btn');
+  wrap.hidden = true;
+  btn.setAttribute('aria-expanded', 'false');
+  btn.textContent = '🗳️ 添加投票';
+  const form = $('#post-form');
+  if (form && form.poll_question) form.poll_question.value = '';
+  const box = $('#poll-options');
+  box.innerHTML = '';
+  for (let i = 0; i < POLL_OPTIONS_MIN; i++) box.appendChild(pollOptionRow(i));
+  updatePollAddButton();
+}
+
+function pollOptionRow(i) {
+  const input = el('input', {
+    name: 'poll_option',
+    type: 'text',
+    placeholder: `选项 ${i + 1}`,
+    maxLength: 80,
+    autocomplete: 'off',
+  });
+  input.className = 'poll-option-input';
+  const remove = el('button', {
+    type: 'button', className: 'ghost small poll-option-remove', textContent: '×', title: '移除选项',
+  });
+  remove.addEventListener('click', () => {
+    const box = $('#poll-options');
+    if (box.children.length <= POLL_OPTIONS_MIN) return;
+    row.remove();
+    relabelPollOptions();
+    updatePollAddButton();
+  });
+  const row = el('div', { className: 'poll-option-row' }, [input, remove]);
+  return row;
+}
+
+function relabelPollOptions() {
+  const box = $('#poll-options');
+  [...box.children].forEach((row, i) => {
+    const input = row.querySelector('input');
+    if (input) input.placeholder = `选项 ${i + 1}`;
+  });
+}
+
+function updatePollAddButton() {
+  const box = $('#poll-options');
+  $('#poll-add-option').disabled = box.children.length >= POLL_OPTIONS_MAX;
+  const canRemove = box.children.length > POLL_OPTIONS_MIN;
+  for (const row of box.children) {
+    const btn = row.querySelector('.poll-option-remove');
+    if (btn) btn.disabled = !canRemove;
+  }
+}
+
+$('#post-poll-btn').addEventListener('click', () => {
+  const wrap = $('#poll-builder');
+  const btn = $('#post-poll-btn');
+  const opening = wrap.hidden;
+  wrap.hidden = !opening;
+  btn.setAttribute('aria-expanded', String(opening));
+  btn.textContent = opening ? '🗳️ 收起投票' : '🗳️ 添加投票';
+  if (opening) {
+    const q = $('#post-form').poll_question;
+    if (q) q.focus();
+  }
+});
+
+$('#poll-add-option').addEventListener('click', () => {
+  const box = $('#poll-options');
+  if (box.children.length >= POLL_OPTIONS_MAX) return;
+  box.appendChild(pollOptionRow(box.children.length));
+  updatePollAddButton();
+});
+
+$('#poll-remove').addEventListener('click', () => resetPollBuilder());
+
+function collectPollInput() {
+  const wrap = $('#poll-builder');
+  if (wrap.hidden) return null;
+  const form = $('#post-form');
+  const question = form.poll_question ? form.poll_question.value.trim() : '';
+  const options = [...$('#poll-options').querySelectorAll('input[name="poll_option"]')]
+    .map((i) => i.value.trim())
+    .filter(Boolean);
+  if (!question) return { error: '投票问题不能为空' };
+  const unique = [...new Set(options)];
+  if (unique.length < POLL_OPTIONS_MIN) return { error: `投票至少需要 ${POLL_OPTIONS_MIN} 个不重复选项` };
+  return { value: { question, options: unique } };
+}
+
+function renderPoll(poll) {
+  const box = $('#thread-poll');
+  box.innerHTML = '';
+  if (!poll) { box.hidden = true; return; }
+  box.hidden = false;
+
+  box.appendChild(el('div', { className: 'poll-question', textContent: poll.question }));
+  const hasToken = !!getToken();
+
+  if (poll.voted) {
+    const total = poll.total || 0;
+    const countMap = new Map((poll.counts || []).map((c) => [c.option_id, c.votes]));
+    const list = el('div', { className: 'poll-results' });
+    for (const o of poll.options) {
+      const votes = countMap.get(o.id) || 0;
+      const pct = total > 0 ? Math.round((votes / total) * 1000) / 10 : 0;
+      const labelRow = el('div', { className: 'poll-result-head' }, [
+        el('span', { className: 'poll-result-label', textContent: o.label }),
+        el('span', { className: 'poll-result-count', textContent: `${votes} 票 · ${pct}%` }),
+      ]);
+      const bar = el('div', { className: 'poll-bar' });
+      const fill = el('div', { className: 'poll-bar-fill' });
+      fill.style.width = `${pct}%`;
+      bar.appendChild(fill);
+      const row = el('div', { className: 'poll-result-row' + (o.id === poll.my_option_id ? ' is-mine' : '') }, [labelRow, bar]);
+      list.appendChild(row);
+    }
+    box.appendChild(list);
+    box.appendChild(el('div', { className: 'poll-foot muted', textContent: `共 ${total} 票 · 你已投票，结果已揭晓。` }));
+    return;
+  }
+
+  const form = el('form', { className: 'poll-vote-form' });
+  const list = el('div', { className: 'poll-choices' });
+  for (const o of poll.options) {
+    const input = el('input', { type: 'radio', name: 'poll_choice', value: String(o.id) });
+    input.required = true;
+    const label = el('label', { className: 'poll-choice' }, [
+      input,
+      el('span', { className: 'poll-choice-label', textContent: o.label }),
+    ]);
+    list.appendChild(label);
+  }
+  form.appendChild(list);
+  const submit = el('button', { type: 'submit', className: 'poll-vote-submit', textContent: '投票' });
+  const hint = el('div', { className: 'muted poll-hint' });
+  hint.textContent = hasToken
+    ? '投票后才能看到每个选项的人数和比例。投票后无法更改。'
+    : '请先领取发帖令牌才能投票。';
+  if (!hasToken) submit.disabled = true;
+  const actions = el('div', { className: 'poll-vote-actions' }, [submit, hint]);
+  form.appendChild(actions);
+  const err = el('div', { className: 'err poll-err' });
+  form.appendChild(err);
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    err.textContent = '';
+    const picked = form.querySelector('input[name="poll_choice"]:checked');
+    if (!picked) { err.textContent = '请选择一个选项。'; return; }
+    submitPollVote(parseInt(picked.value, 10), err).catch(() => {});
+  });
+  box.appendChild(form);
+}
+
+async function submitPollVote(optionId, errNode) {
+  if (currentThread == null) return;
+  const t = getToken();
+  if (!t) { openDialog(); return; }
+  const postId = currentThread;
+  try {
+    const r = await api('POST', `/api/posts/${postId}/vote`, { token: t.token, option_id: optionId });
+    if (currentThread !== postId) return;
+    setMyVote(t.pseudonym, postId, optionId);
+    renderPoll(r.poll);
+  } catch (err) {
+    if (/令牌/.test(err.message)) { openDialog(); return; }
+    if (errNode) errNode.textContent = err.message;
+  }
+}
+
+// Reveal results when the local hint says we already voted on this poll
+// from an earlier session. The server still gates whether counts come back.
+async function refreshPollForCurrentThread() {
+  const t = getToken();
+  if (!t) return;
+  const postId = currentThread;
+  if (!myVoteFor(t.pseudonym, postId)) return;
+  try {
+    const r = await api('POST', `/api/posts/${postId}/vote`, { token: t.token });
+    if (currentThread !== postId) return;
+    if (r.poll && r.poll.voted) renderPoll(r.poll);
+  } catch { /* ignore */ }
+}
 
 // SECTION: reader
 // --- Thread view ---
@@ -1968,7 +2185,7 @@ async function openThread(id, { pushUrl = true } = {}) {
     renderMissingThread(id, err.message);
     return;
   }
-  const { post, comments, reactions } = data;
+  const { post, comments, reactions, poll } = data;
   const deleted = !!post.deleted_at;
   currentComments = comments.slice();
   currentPostPseudonym = deleted ? null : post.pseudonym;
@@ -2003,9 +2220,12 @@ async function openThread(id, { pushUrl = true } = {}) {
   if (deleted) {
     $('#reactions').innerHTML = '';
     $('#reactions').hidden = true;
+    renderPoll(null);
   } else {
     $('#reactions').hidden = false;
     renderReactions(reactions || Object.fromEntries(REACTION_KINDS.map((k) => [k, 0])));
+    renderPoll(poll || null);
+    refreshPollForCurrentThread().catch(() => {});
   }
   const box = $('#comments');
   box.innerHTML = '';
@@ -2026,6 +2246,7 @@ function renderMissingThread(id, message) {
   currentComments = [];
   currentPostPseudonym = null;
   currentPostCanDelete = false;
+  renderPoll(null);
   $('#reactions').innerHTML = '';
   $('#reactions').hidden = false;
   $('#comment-form').hidden = false;

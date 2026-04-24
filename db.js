@@ -86,6 +86,42 @@ CREATE TABLE IF NOT EXISTS reactions (
 );
 CREATE INDEX IF NOT EXISTS idx_reactions_post ON reactions(post_id);
 
+-- Polls attach 0..1 to a post. question + ordered option list. A vote is
+-- keyed by token_hash (not user_id), so votes cascade out when the token
+-- expires — same privacy model as reactions. PK (poll_id, token_hash)
+-- enforces one vote per token per poll; rotating the token effectively
+-- drops the link to the previous vote, consistent with the rest of the
+-- app. Results are NEVER returned by the server unless the caller's token
+-- already has a vote row on the poll (enforced server-side in routes).
+CREATE TABLE IF NOT EXISTS polls (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  post_id INTEGER NOT NULL UNIQUE,
+  question TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS poll_options (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  poll_id INTEGER NOT NULL,
+  position INTEGER NOT NULL,
+  label TEXT NOT NULL,
+  FOREIGN KEY (poll_id) REFERENCES polls(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_poll_options_poll ON poll_options(poll_id, position);
+
+CREATE TABLE IF NOT EXISTS poll_votes (
+  poll_id INTEGER NOT NULL,
+  token_hash TEXT NOT NULL,
+  option_id INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (poll_id, token_hash),
+  FOREIGN KEY (poll_id) REFERENCES polls(id) ON DELETE CASCADE,
+  FOREIGN KEY (option_id) REFERENCES poll_options(id) ON DELETE CASCADE,
+  FOREIGN KEY (token_hash) REFERENCES post_tokens(token_hash) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_poll_votes_option ON poll_votes(option_id);
+
 -- Channels are attached to the post, not the author, so they leak no
 -- "who wrote what" info. ON DELETE SET NULL on posts.channel_id (in
 -- the ALTER below) keeps posts alive when a channel is removed —

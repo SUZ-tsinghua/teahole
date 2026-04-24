@@ -4,6 +4,7 @@
      SECTION: reader        main reader pane + two-column grid
      SECTION: comments      comment tree layout + reply forms
      SECTION: mentions      mentions inbox + post-ref chips
+     SECTION: poll          thread-view poll + composer builder
    ============================================================ */
 
 /* SECTION: post-card */
@@ -678,3 +679,155 @@
   word-break: break-word;
   max-height: 60px;
   overflow: hidden;
+}
+
+/* SECTION: poll
+   ============================================================ */
+.poll {
+  margin: 10px 0 20px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+.poll-question {
+  font-size: 14.5px;
+  font-weight: 600;
+  margin-bottom: 12px;
+  color: var(--fg);
+  word-break: break-word;
+  letter-spacing: -0.005em;
+}
+.poll-vote-form .poll-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+.poll-choice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-solid);
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+  font-size: 14px;
+  color: var(--fg);
+}
+:root[data-theme="dark"] .poll-choice { background: var(--surface-2); }
+.poll-choice:hover { border-color: var(--border-strong); background: var(--surface-hover); }
+.poll-choice input[type="radio"] {
+  accent-color: var(--accent);
+  margin: 0;
+  flex: 0 0 auto;
+  width: auto;
+}
+.poll-choice-label { flex: 1 1 auto; word-break: break-word; }
+.poll-vote-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+}
+.poll-vote-submit { padding: 7px 18px; font-size: 13px; }
+.poll-vote-submit:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+.poll-hint {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 0;
+  letter-spacing: 0;
+}
+.poll-err { margin-top: 6px; }
+
+/* Results */
+.poll-results { display: flex; flex-direction: column; gap: 10px; }
+.poll-result-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: var(--radius);
+  background: var(--surface-solid);
+  border: 1px solid var(--border);
+}
+:root[data-theme="dark"] .poll-result-row { background: var(--surface-2); }
+.poll-result-row.is-mine {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.poll-result-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: baseline;
+  font-size: 13.5px;
+}
+.poll-result-label { font-weight: 500; color: var(--fg); word-break: break-word; }
+.poll-result-count {
+  flex-shrink: 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  font-family: var(--mono);
+  letter-spacing: 0;
+}
+.poll-result-row.is-mine .poll-result-count { color: var(--accent); }
+.poll-bar {
+  height: 6px;
+  background: var(--border);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.poll-bar-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: inherit;
+  transition: width 320ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.poll-foot { margin-top: 10px; font-size: 12px; }
+
+/* Composer builder */
+.poll-builder {
+  margin-top: 4px;
+  padding: 12px 14px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.poll-options-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.poll-option-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.poll-option-input { flex: 1; min-width: 0; }
+.poll-option-remove {
+  flex: 0 0 auto;
+  padding: 6px 10px;
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1;
+}
+.poll-option-remove:disabled { opacity: 0.35; cursor: not-allowed; }
+.poll-builder-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.poll-builder-actions button:disabled { opacity: 0.5; cursor: not-allowed; }
