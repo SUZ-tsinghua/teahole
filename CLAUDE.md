@@ -266,3 +266,13 @@ Imperative subject line under ~70 chars. Short body explaining the *why*
 and the privacy-relevant design choice if there is one. Co-Authored-By
 trailer with the model name (see recent commits —
 `git log -1 --pretty=format:'%B'`).
+
+**Before every commit, update the user-facing docs to match the staged
+changes:** `README.md`, `README.en.md`, and `docs/index.html`. Skim the
+diff for anything visible to users — new/changed features, endpoints,
+UI behaviour, install/run steps, privacy guarantees — and reflect it in
+all three. Keep the English (`README.en.md`) and Chinese (`README.md`)
+copies in sync; `docs/index.html` is the public landing page and must
+not drift from the READMEs. If a change is purely internal (refactor,
+typo, dependency bump with no behaviour change), note that in the commit
+body and skip the doc edits.
