@@ -1690,11 +1690,17 @@ for (const btn of $$('#feed-tabs .feed-tab')) {
 // strips EXIF via sharp, resizes to max 1600px wide, and emits WebP
 // (except for PNGs, which stay PNG to preserve transparency).
 async function uploadImage(file) {
+  if (file.size > 4 * 1024 * 1024) throw new Error('文件过大（上限 4 MB）');
   const t = getToken();
   const body = new FormData();
   body.append('image', file);
   if (t) body.append('token', t.token);
-  const res = await fetch('/api/uploads', { method: 'POST', body });
+  let res;
+  try {
+    res = await fetch('/api/uploads', { method: 'POST', body });
+  } catch {
+    throw new Error('网络错误，请检查连接后重试');
+  }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
   return data.url;

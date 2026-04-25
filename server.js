@@ -1262,19 +1262,22 @@ app.delete('/api/posts/:pid/comments/:id', requireSession, (req, res) => {
 // so random session holders can't silently park files in the bucket.
 // SECTION: routes:uploads
 app.post('/api/uploads', requireSession, (req, res) => {
-  uploadMiddleware.single('image')(req, res, async (err) => {
-    if (err) {
-      const msg = err.code === 'LIMIT_FILE_SIZE' ? '文件过大（上限 4 MB）' : '上传失败';
+  uploadMiddleware.single('image')(req, res, async (multerErr) => {
+    if (multerErr) {
+      const msg = multerErr.code === 'LIMIT_FILE_SIZE' ? '文件过大（上限 4 MB）' : '上传失败';
       return res.status(400).json({ error: msg });
     }
-    const { token } = req.body || {};
-    const resolved = resolveToken(token);
-    const admin = isLiveAdmin(req.user.uid);
-    if (!resolved && !admin) return res.status(401).json({ error: '发帖令牌无效或已过期' });
-    if (!req.file) return res.status(400).json({ error: '没有图片' });
-    const inExt = UPLOAD_EXT_FOR_MIME[req.file.mimetype];
-    if (!inExt) return res.status(400).json({ error: '只支持 JPG / PNG / WebP' });
+    // Entire handler is inside try/catch so that a synchronous throw from
+    // resolveToken or isLiveAdmin (e.g. a SQLite error) becomes a 500 response
+    // rather than an unhandled promise rejection that would crash the process.
     try {
+      const { token } = req.body || {};
+      const resolved = resolveToken(token);
+      const admin = isLiveAdmin(req.user.uid);
+      if (!resolved && !admin) return res.status(401).json({ error: '发帖令牌无效或已过期' });
+      if (!req.file) return res.status(400).json({ error: '没有图片' });
+      const inExt = UPLOAD_EXT_FOR_MIME[req.file.mimetype];
+      if (!inExt) return res.status(400).json({ error: '只支持 JPG / PNG / WebP' });
       const pipeline = sharp(req.file.buffer, { failOn: 'error' })
         .rotate()
         .resize({ width: 1600, withoutEnlargement: true });
@@ -1290,7 +1293,7 @@ app.post('/api/uploads', requireSession, (req, res) => {
       if (!fs.existsSync(filePath)) fs.writeFileSync(filePath, out);
       res.json({ url: `/api/uploads/${fileName}` });
     } catch {
-      res.status(400).json({ error: '无法解析图片' });
+      if (!res.headersSent) res.status(500).json({ error: '上传失败，请稍后重试' });
     }
   });
 });
