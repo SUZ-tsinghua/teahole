@@ -166,6 +166,9 @@
 .post:hover { background: var(--paper-2); margin: 0 -16px; padding-left: 16px; padding-right: 16px; }
 .post.active { background: var(--seal-soft); margin: 0 -16px; padding-left: 16px; padding-right: 16px; }
 
+.post.post-deleted .post-title { color: var(--ink-3); font-style: italic; font-weight: 600; }
+.post.post-deleted .id-badge { opacity: 0.7; }
+
 /* Pinned post: left seal border + tinted bg */
 .post.is-pinned,
 .post.pinned {

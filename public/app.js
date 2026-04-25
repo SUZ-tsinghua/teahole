@@ -2065,6 +2065,7 @@ $('#bulletin-form').addEventListener('submit', async (e) => {
 
 // SECTION: post-card
 function renderPostCard(p) {
+  if (p.deleted_at) return renderDeletedPostCard(p);
   const ch = channelById(p.channel_id);
   const likeCount = p.reactions && typeof p.reactions['👍'] === 'number' ? p.reactions['👍'] : 0;
   const cc = typeof p.comment_count === 'number' ? p.comment_count : 0;
@@ -2114,6 +2115,26 @@ function renderPostCard(p) {
   if (savedIds.has(p.id)) foot.appendChild(el('span', { className: 'saved-tag', textContent: '★ 收藏' }));
 
   const node = el('div', { className: 'post' }, [metaRow, titleRow, excerpt, foot]);
+  node.dataset.postId = p.id;
+  node.addEventListener('click', () => openThread(p.id));
+  return node;
+}
+
+function renderDeletedPostCard(p) {
+  const metaRow = el('div', { className: 'post-meta' }, [
+    el('span', { className: 'meta-ts', textContent: `已删除于 ${fmtDate(p.deleted_at)}` }),
+  ]);
+  const titleRow = el('div', { className: 'post-title-row' }, [
+    el('span', { className: 'id-badge id-badge--post', textContent: `#post${p.id}` }),
+    el('span', { className: 'post-title', textContent: '[已删除]' }),
+  ]);
+  const node = el('div', { className: 'post post-deleted' }, [metaRow, titleRow]);
+  const cc = typeof p.comment_count === 'number' ? p.comment_count : 0;
+  if (cc > 0) {
+    node.appendChild(el('div', { className: 'post-foot' }, [
+      el('span', { className: 'post-stat comment-count', textContent: `↺ ${cc} 评论` }),
+    ]));
+  }
   node.dataset.postId = p.id;
   node.addEventListener('click', () => openThread(p.id));
   return node;

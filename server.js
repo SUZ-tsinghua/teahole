@@ -232,13 +232,14 @@ function postPreviewSql(alias = '') {
   const content = qualify(alias, 'content');
   const createdAt = qualify(alias, 'created_at');
   const editedAt = qualify(alias, 'edited_at');
+  const deletedAt = qualify(alias, 'deleted_at');
   const channelId = qualify(alias, 'channel_id');
   return `${id}, ${pseudonym},
           ${authorKeySql(alias)},
           ${title},
           substr(${content}, 1, ${PREVIEW_BYTES}) AS content,
           length(${content}) > ${PREVIEW_BYTES} AS truncated,
-          ${createdAt}, ${editedAt}, ${channelId}`;
+          ${createdAt}, ${editedAt}, ${deletedAt}, ${channelId}`;
 }
 
 // SECTION: Q — prepared statements. Add new queries here, never inline.
@@ -284,12 +285,12 @@ const Q = {
   ),
   listPosts:       db.prepare(
     `SELECT ${postPreviewSql()}
-     FROM posts WHERE deleted_at IS NULL
+     FROM posts
      ORDER BY created_at DESC LIMIT ${FEED_LIMIT}`
   ),
   listPostsByChannel: db.prepare(
     `SELECT ${postPreviewSql()}
-     FROM posts WHERE channel_id = ? AND deleted_at IS NULL
+     FROM posts WHERE channel_id = ?
      ORDER BY created_at DESC LIMIT ${FEED_LIMIT}`
   ),
   listPostsForRss: db.prepare(
@@ -406,7 +407,7 @@ const Q = {
   ),
   listChannels:    db.prepare(
     `SELECT c.id, c.slug, c.name, c.description, c.created_at,
-            (SELECT COUNT(*) FROM posts p WHERE p.channel_id = c.id AND p.deleted_at IS NULL) AS post_count
+            (SELECT COUNT(*) FROM posts p WHERE p.channel_id = c.id) AS post_count
      FROM channels c ORDER BY c.created_at ASC`
   ),
   getChannelBySlug: db.prepare('SELECT id, slug, name, description FROM channels WHERE slug = ?'),
@@ -590,6 +591,7 @@ function mapPostPreview(r) {
     truncated: !!r.truncated,
     created_at: r.created_at,
     edited_at: r.edited_at,
+    deleted_at: r.deleted_at,
     channel_id: r.channel_id,
   };
 }
