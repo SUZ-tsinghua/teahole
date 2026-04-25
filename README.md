@@ -171,9 +171,6 @@ sqlite3 data.db "UPDATE users SET is_admin = 1 WHERE username = 'you';"
 
 把允许注册的邮箱一行一个写进 `dept-allowlist.txt`（`#` 开头是注释）。
 文件不存在 = 注册全关闭。服务端每 2 秒 `stat` 一次，可以热改。
-如果手里是 CSV / TXT / HTML 名册导出，可以用
-`npm run allowlist:import -- roster.csv` 抽取邮箱；加
-`--domain mails.tsinghua.edu.cn` 可以只保留指定域名。
 
 ## 部署到 fly.io
 
