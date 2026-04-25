@@ -394,10 +394,6 @@ main#app { height: 100vh; overflow: hidden; position: relative; }
   color: var(--seal);
   min-height: 16px;
 }
-.user-menu-pw-ok {
-  font-size: 12px;
-  color: var(--success);
-}
 
 /* SECTION: resizer */
 .sidebar-resizer {

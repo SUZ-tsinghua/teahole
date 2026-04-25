@@ -253,7 +253,10 @@ const Q = {
   ),
   insertUser:      db.prepare('INSERT INTO users (username, password_hash, created_at) VALUES (?, ?, ?)'),
   findUserById:    db.prepare('SELECT id, password_hash FROM users WHERE id = ?'),
-  updateUserPassword: db.prepare('UPDATE users SET password_hash = ? WHERE id = ?'),
+  getUserPwVersion: db.prepare('SELECT pw_version FROM users WHERE id = ?'),
+  // Bumping pw_version invalidates every JWT issued before this update;
+  // see requireSession's pv check.
+  updateUserPassword: db.prepare('UPDATE users SET password_hash = ?, pw_version = pw_version + 1 WHERE id = ?'),
   findUserQuota:   db.prepare('SELECT tokens_issued_date, tokens_issued_count FROM users WHERE id = ?'),
   bumpTokenCount:  db.prepare('UPDATE users SET tokens_issued_date = ?, tokens_issued_count = ? WHERE id = ?'),
   insertToken:     db.prepare('INSERT INTO post_tokens (token_hash, expires_at) VALUES (?, ?)'),
@@ -812,6 +815,10 @@ function requireSession(req, res, next) {
     if (payload.jti && Q.findRevoked.get(payload.jti)) {
       return res.status(401).json({ error: '会话无效或已过期' });
     }
+    const pvRow = Q.getUserPwVersion.get(payload.uid);
+    if (!pvRow || (payload.pv | 0) < pvRow.pw_version) {
+      return res.status(401).json({ error: '会话无效或已过期' });
+    }
     req.user = payload;
     next();
   } catch {
@@ -901,7 +908,8 @@ function pickSearchStrategy(raw) {
 
 function issueSession(res, userId, username, isAdmin) {
   const jti = crypto.randomBytes(12).toString('hex');
-  const token = jwt.sign({ uid: userId, u: username, a: isAdmin, jti }, JWT_SECRET, {
+  const pv = Q.getUserPwVersion.get(userId)?.pw_version ?? 0;
+  const token = jwt.sign({ uid: userId, u: username, a: isAdmin, pv, jti }, JWT_SECRET, {
     expiresIn: `${SESSION_TTL_DAYS}d`,
   });
   res.cookie('session', token, SESSION_COOKIE_OPTS);
@@ -1079,6 +1087,7 @@ app.post('/api/change-password', requireSession, rateLimit('change-password', 5)
   if (!ok) return res.status(401).json({ error: '当前密码错误' });
   const hash = await bcrypt.hash(new_password, 12);
   Q.updateUserPassword.run(hash, row.id);
+  res.clearCookie('session', SESSION_COOKIE_BASE_OPTS);
   res.json({ ok: true });
 });
 

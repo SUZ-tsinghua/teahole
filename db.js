@@ -32,7 +32,8 @@ CREATE TABLE IF NOT EXISTS users (
   display_name TEXT,
   created_at INTEGER NOT NULL,
   tokens_issued_date TEXT,
-  tokens_issued_count INTEGER NOT NULL DEFAULT 0
+  tokens_issued_count INTEGER NOT NULL DEFAULT 0,
+  pw_version INTEGER NOT NULL DEFAULT 0
 );
 
 -- Active posting tokens. Hash only. No user link.
@@ -352,6 +353,9 @@ db.exec('CREATE INDEX IF NOT EXISTS idx_comments_parent ON comments(parent_id)')
 const userCols = columnsOf('users');
 if (!userCols.includes('display_name')) {
   db.exec('ALTER TABLE users ADD COLUMN display_name TEXT');
+}
+if (!userCols.includes('pw_version')) {
+  db.exec('ALTER TABLE users ADD COLUMN pw_version INTEGER NOT NULL DEFAULT 0');
 }
 
 const postCols = columnsOf('posts');

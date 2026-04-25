@@ -574,36 +574,34 @@ function renderUserMenu(me) {
   toggle.setAttribute('aria-expanded', 'false');
 
   const pwErrNode = el('div', { className: 'user-menu-pw-err' });
-  const pwOkNode = el('div', { className: 'user-menu-pw-ok', hidden: true, textContent: '密码已修改' });
   const pwForm = el('form', { className: 'user-menu-pw-form', hidden: true });
   pwForm.append(
     el('input', { type: 'password', name: 'current_password', placeholder: '当前密码', autocomplete: 'current-password', required: true }),
     el('input', { type: 'password', name: 'new_password', placeholder: '新密码（8–128 位）', autocomplete: 'new-password', required: true }),
     el('input', { type: 'password', name: 'new_password_confirm', placeholder: '再次输入新密码', autocomplete: 'new-password', required: true }),
     pwErrNode,
-    pwOkNode,
     el('div', { className: 'user-menu-pw-actions' }, [
       el('button', { type: 'submit', className: 'user-menu-item', textContent: '确认修改' }),
       el('button', {
         type: 'button',
         className: 'user-menu-item',
         textContent: '取消',
-        onclick: () => { pwForm.hidden = true; pwForm.reset(); pwErrNode.textContent = ''; pwOkNode.hidden = true; },
+        onclick: () => { pwForm.hidden = true; pwForm.reset(); pwErrNode.textContent = ''; },
       }),
     ]),
   );
   pwForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     pwErrNode.textContent = '';
-    pwOkNode.hidden = true;
     try {
       await api('POST', '/api/change-password', {
         current_password: pwForm.current_password.value,
         new_password: pwForm.new_password.value,
         new_password_confirm: pwForm.new_password_confirm.value,
       });
-      pwForm.reset();
-      pwOkNode.hidden = false;
+      // Server clears the cookie and bumps pw_version; flip the UI to the
+      // auth screen so the user has to log in again with the new password.
+      logout();
     } catch (err) {
       pwErrNode.textContent = err.message;
     }
@@ -616,7 +614,6 @@ function renderUserMenu(me) {
       pwForm.hidden = !pwForm.hidden;
       if (!pwForm.hidden) pwForm.querySelector('input').focus();
       pwErrNode.textContent = '';
-      pwOkNode.hidden = true;
     },
   });
 
