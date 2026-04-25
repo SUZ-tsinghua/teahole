@@ -413,9 +413,11 @@ const Q = {
     'UPDATE bulletins SET title = ?, content = ?, updated_at = ? WHERE id = ?'
   ),
   deleteBulletin:   db.prepare('DELETE FROM bulletins WHERE id = ?'),
-  insertSaved:      db.prepare('INSERT OR IGNORE INTO saved_posts (user_id, post_id, created_at) VALUES (?, ?, ?)'),
-  deleteSaved:      db.prepare('DELETE FROM saved_posts WHERE user_id = ? AND post_id = ?'),
-  listSavedIds:     db.prepare('SELECT post_id FROM saved_posts WHERE user_id = ? ORDER BY created_at DESC'),
+  insertSaved:        db.prepare('INSERT OR IGNORE INTO saved_posts (user_id, post_id, created_at) VALUES (?, ?, ?)'),
+  deleteSaved:        db.prepare('DELETE FROM saved_posts WHERE user_id = ? AND post_id = ?'),
+  listSavedIds:       db.prepare('SELECT post_id FROM saved_posts WHERE user_id = ? ORDER BY created_at DESC'),
+  countSavedForPost:  db.prepare('SELECT COUNT(*) AS n FROM saved_posts WHERE post_id = ?'),
+  countFollowedForPost: db.prepare('SELECT COUNT(*) AS n FROM followed_posts WHERE post_id = ?'),
   listSavedPosts:   db.prepare(
     `SELECT ${postPreviewSql('p')}
      FROM saved_posts s JOIN posts p ON p.id = s.post_id
@@ -1131,6 +1133,8 @@ app.get('/api/posts/:id', requireSession, (req, res) => {
     comments,
     reactions: reactionCountsFor(id),
     poll: post.deleted_at ? null : pollViewFor(id, null),
+    save_count:   Q.countSavedForPost.get(id)?.n ?? 0,
+    follow_count: Q.countFollowedForPost.get(id)?.n ?? 0,
   });
 });
 
@@ -1353,13 +1357,13 @@ app.post('/api/saved/:id', requireSession, (req, res) => {
     return res.status(Q.postExists.get(id) ? 410 : 404).json({ error: '帖子已删除或未找到' });
   }
   Q.insertSaved.run(req.user.uid, id, Date.now());
-  res.json({ ok: true, saved: true });
+  res.json({ ok: true, saved: true, save_count: Q.countSavedForPost.get(id)?.n ?? 0 });
 });
 
 app.delete('/api/saved/:id', requireSession, (req, res) => {
   const id = parseId(req, res); if (id == null) return;
   Q.deleteSaved.run(req.user.uid, id);
-  res.json({ ok: true, saved: false });
+  res.json({ ok: true, saved: false, save_count: Q.countSavedForPost.get(id)?.n ?? 0 });
 });
 
 // Docs bookmarks. Same reader-side model as saved_posts — (user_id,
@@ -1401,13 +1405,13 @@ app.post('/api/followed/:id', requireSession, (req, res) => {
   }
   const max = Q.maxCommentId.get(id).max;
   Q.upsertFollow.run(req.user.uid, id, Date.now(), max);
-  res.json({ ok: true, followed: true, last_seen_comment_id: max });
+  res.json({ ok: true, followed: true, last_seen_comment_id: max, follow_count: Q.countFollowedForPost.get(id)?.n ?? 0 });
 });
 
 app.delete('/api/followed/:id', requireSession, (req, res) => {
   const id = parseId(req, res); if (id == null) return;
   Q.deleteFollow.run(req.user.uid, id);
-  res.json({ ok: true, followed: false });
+  res.json({ ok: true, followed: false, follow_count: Q.countFollowedForPost.get(id)?.n ?? 0 });
 });
 
 // Per-user channel prefs: pinned + muted + last-seen. Reader-side

@@ -281,15 +281,14 @@
         <button id="thread-back" class="back" data-close="reader">← 返回</button>
         <div id="thread-meta" class="meta"></div>
         <h2 id="thread-title"></h2>
-        <div id="thread-stats" class="thread-stats"></div>
+        <div id="thread-channel" class="thread-channel" hidden></div>
+        <div id="thread-body" class="prose"></div>
+        <div id="thread-poll" class="poll" hidden></div>
         <div id="thread-toolbar" class="thread-toolbar" hidden>
           <div id="reactions" class="reactions"></div>
           <div id="thread-actions" class="thread-actions" hidden></div>
         </div>
-        <div id="thread-channel" class="thread-channel" hidden></div>
-        <div id="thread-body" class="prose"></div>
-        <div id="thread-poll" class="poll" hidden></div>
-        <h3>评论</h3>
+        <h3 id="comments-heading">评论</h3>
         <div id="comments"></div>
         <form id="comment-form" class="inline-form">
           <textarea name="content" placeholder="写下你的评论…" required maxlength="5000"></textarea>

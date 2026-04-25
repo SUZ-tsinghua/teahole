@@ -588,29 +588,6 @@
   letter-spacing: 0.12em;
 }
 
-.thread-stats {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  flex-wrap: wrap;
-  font-family: var(--serif);
-  font-size: 14px;
-  color: var(--ink-3);
-  margin: 0 0 14px;
-  padding-bottom: 0;
-  border-bottom: none;
-}
-.thread-stats .thread-stat-label { color: var(--ink-3); }
-.thread-stats .sep {
-  color: var(--ink-4);
-  font-family: var(--serif);
-}
-.thread-stats .id-badge--lg {
-  margin-right: 0;
-  color: var(--ink-2);
-  background: var(--paper-warm);
-  border-color: var(--rule);
-}
 
 #thread-body.prose {
   font-size: 18px;
@@ -671,7 +648,7 @@
   align-items: center;
   gap: 7px;
   flex-wrap: wrap;
-  margin: 0 0 34px;
+  margin: 28px 0 34px;
   padding-bottom: 24px;
   border-bottom: 0.5px solid var(--rule);
 }
@@ -692,12 +669,6 @@
 .reaction-pill:hover {
   background: var(--paper-warm);
   border-color: var(--ink-3);
-}
-.thread-toolbar button.ghost.small.is-saved,
-.thread-toolbar button.ghost.small.is-followed {
-  background: var(--seal-soft);
-  border-color: var(--seal);
-  color: var(--seal);
 }
 
 /* Compact top action bar: like/dislike live next to save/follow. */

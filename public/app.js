@@ -245,6 +245,8 @@ let currentView = null;
 let currentThread = null;
 let currentComments = [];
 let currentReactionCounts = null;
+let currentSaveCount = 0;
+let currentFollowCount = 0;
 let currentPostPseudonym = null;
 let currentPostCanDelete = false;
 let feedPosts = [];
@@ -1201,8 +1203,9 @@ function renderFollowedBadge() {
 async function toggleFollow(postId) {
   const wasFollowed = followedIds.has(postId);
   try {
-    await api(wasFollowed ? 'DELETE' : 'POST', `/api/followed/${postId}`);
+    const r = await api(wasFollowed ? 'DELETE' : 'POST', `/api/followed/${postId}`);
     if (wasFollowed) followedIds.delete(postId); else followedIds.add(postId);
+    if (currentThread === postId && r.follow_count != null) currentFollowCount = r.follow_count;
     await loadFollowed();
     renderThreadActions();
   } catch (err) {
@@ -1254,8 +1257,9 @@ $('#followed-btn').addEventListener('click', () => {
 async function toggleSaved(postId) {
   const wasSaved = savedIds.has(postId);
   try {
-    await api(wasSaved ? 'DELETE' : 'POST', `/api/saved/${postId}`);
+    const r = await api(wasSaved ? 'DELETE' : 'POST', `/api/saved/${postId}`);
     if (wasSaved) savedIds.delete(postId); else savedIds.add(postId);
+    if (currentThread === postId && r.save_count != null) currentSaveCount = r.save_count;
     renderThreadActions();
     if (filterState.kind === 'saved') await loadFeed();
   } catch (err) {
@@ -2446,7 +2450,11 @@ function renderThreadMeta(post, ch, deleted) {
   if (deleted) {
     delete meta.dataset.pseudonym;
     meta.style.removeProperty('--id-hue');
-    meta.appendChild(el('span', { className: 'meta-ts', textContent: `已删除于 ${fmtDate(post.deleted_at)}` }));
+    meta.append(
+      el('span', { className: 'meta-ts', textContent: `已删除于 ${fmtDate(post.deleted_at)}` }),
+      el('span', { className: 'sep', textContent: '·' }),
+      el('span', { className: 'id-badge', textContent: `#${post.id}` }),
+    );
     return;
   }
   applyIdHue(meta, post.pseudonym);
@@ -2460,52 +2468,57 @@ function renderThreadMeta(post, ch, deleted) {
     chTag.addEventListener('click', () => filterByChannel(ch.id));
     meta.append(chTag, el('span', { className: 'sep', textContent: '·' }));
   }
-  meta.append(pseudonymChip(post.pseudonym, post.author_key), ...metaTimeSuffix(post.created_at, post.edited_at));
+  meta.append(
+    pseudonymChip(post.pseudonym, post.author_key),
+    ...metaTimeSuffix(post.created_at, post.edited_at),
+    el('span', { className: 'sep', textContent: '·' }),
+    el('span', { className: 'id-badge', textContent: `#${post.id}` }),
+  );
 }
 
-function renderThreadStats(postId) {
-  const box = $('#thread-stats');
-  if (!box) return;
-  box.innerHTML = '';
-  if (postId == null) { box.hidden = true; return; }
-  box.hidden = false;
-  box.append(
-    el('span', { className: 'thread-stat-label', textContent: '帖号' }),
-    el('span', { className: 'id-badge id-badge--lg', textContent: `#${postId}` }),
-  );
+function renderCommentsHeading() {
+  const h = $('#comments-heading');
+  if (!h) return;
+  const n = currentComments.length;
+  h.textContent = n > 0 ? `评论 · ${n} 条` : '评论';
+}
+
+function makeStatPill({ emoji, label, count, active, onClick }) {
+  const pill = el('button', { type: 'button', className: 'reaction-pill' + (active ? ' is-mine' : ''), title: label });
+  pill.appendChild(el('span', { className: 'reaction-emoji', textContent: emoji }));
+  pill.appendChild(el('span', { className: 'reaction-label', textContent: label }));
+  pill.appendChild(el('span', { className: 'reaction-count' + (count === 0 ? ' is-zero' : ''), textContent: String(count) }));
+  pill.addEventListener('click', onClick);
+  return pill;
 }
 
 function renderThreadActions() {
   const box = $('#thread-actions');
   box.innerHTML = '';
-  const buttons = [];
-  if (currentThread != null) {
-    const save = el('button', {
-      id: 'thread-save', type: 'button', className: 'ghost small',
-    });
-    const saved = savedIds.has(currentThread);
-    save.classList.toggle('is-saved', saved);
-    save.textContent = saved ? '★ 已收藏' : '☆ 收藏';
-    save.addEventListener('click', () => toggleSaved(currentThread));
-    buttons.push(save);
-  }
-  if (currentThread != null) {
-    const followed = followedIds.has(currentThread);
-    const follow = el('button', {
-      type: 'button', className: 'ghost small' + (followed ? ' is-followed' : ''),
-      textContent: followed ? '🔔 已关注' : '🔕 关注',
-    });
-    follow.addEventListener('click', () => toggleFollow(currentThread));
-    buttons.push(follow);
-  }
+  if (currentThread == null) { box.hidden = true; return; }
+  const pills = [
+    makeStatPill({
+      emoji: savedIds.has(currentThread) ? '★' : '☆',
+      label: '收藏',
+      count: currentSaveCount,
+      active: savedIds.has(currentThread),
+      onClick: () => toggleSaved(currentThread),
+    }),
+    makeStatPill({
+      emoji: followedIds.has(currentThread) ? '🔔' : '🔕',
+      label: '关注',
+      count: currentFollowCount,
+      active: followedIds.has(currentThread),
+      onClick: () => toggleFollow(currentThread),
+    }),
+  ];
+  box.append(...pills);
   if (currentPostCanDelete) {
     const del = el('button', { type: 'button', className: 'ghost small danger', textContent: '删除' });
     del.addEventListener('click', () => deletePost());
-    buttons.push(del);
+    box.appendChild(del);
   }
-  if (!buttons.length) { box.hidden = true; return; }
   box.hidden = false;
-  box.append(...buttons);
 }
 
 async function deletePost() {
@@ -2547,6 +2560,8 @@ async function openThread(id, { pushUrl = true } = {}) {
   const deleted = !!post.deleted_at;
   currentComments = comments.slice();
   currentReactionCounts = normalizedReactionCounts(reactions);
+  currentSaveCount   = data.save_count   ?? 0;
+  currentFollowCount = data.follow_count ?? 0;
   syncFeedPostStats(id, { reactions, commentCount: comments.length });
   currentPostPseudonym = deleted ? null : post.pseudonym;
   currentPostCanDelete = !deleted && canDeleteAuthor(post.author_key);
@@ -2556,7 +2571,7 @@ async function openThread(id, { pushUrl = true } = {}) {
   $('#thread-title').innerHTML = '';
   $('#thread-title').textContent = deleted ? '[已删除]' : post.title;
   renderThreadMeta(post, ch, deleted);
-  renderThreadStats(post.id);
+  renderCommentsHeading();
   $('#thread-body').innerHTML = '';
   if (deleted) {
     $('#thread-body').appendChild(el('p', {
@@ -2600,6 +2615,8 @@ async function openThread(id, { pushUrl = true } = {}) {
 function renderMissingThread(id, message) {
   currentComments = [];
   currentReactionCounts = null;
+  currentSaveCount = 0;
+  currentFollowCount = 0;
   currentPostPseudonym = null;
   currentPostCanDelete = false;
   renderThreadBack(null);
@@ -2614,7 +2631,7 @@ function renderMissingThread(id, message) {
   $('#thread-actions').hidden = true;
   $('#thread-title').innerHTML = '';
   $('#thread-title').textContent = '帖子不存在';
-  renderThreadStats(id);
+  renderCommentsHeading();
   $('#thread-meta').textContent = '';
   delete $('#thread-meta').dataset.pseudonym;
   $('#thread-meta').style.removeProperty('--id-hue');
@@ -2779,7 +2796,7 @@ async function deleteComment(c) {
     const node = $(`.comment[data-comment-id="${c.id}"]`);
     if (node) node.remove();
     syncFeedPostStats(currentThread, { commentCount: currentComments.length });
-    renderThreadStats(currentThread);
+    renderCommentsHeading();
     const box = $('#comments');
     if (!currentComments.length) {
       box.innerHTML = '';
@@ -2824,7 +2841,7 @@ async function submitComment({ parentId, content, errNode, onDone }) {
     if (empty) empty.remove();
     insertCommentIntoTree(created);
     syncFeedPostStats(currentThread, { commentCount: currentComments.length });
-    renderThreadStats(currentThread);
+    renderCommentsHeading();
   } catch (err) {
     errNode.textContent = err.message;
   }
@@ -2926,7 +2943,6 @@ async function toggleReaction(kind) {
     setMyReaction(t.pseudonym, postId, kind, !wasMine);
     currentReactionCounts = normalizedReactionCounts(r.reactions);
     renderReactions(currentReactionCounts);
-    renderThreadStats(postId);
     syncFeedPostStats(postId, { reactions: currentReactionCounts });
   } catch (err) {
     if (/令牌/.test(err.message)) openDialog();
