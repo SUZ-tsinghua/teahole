@@ -108,6 +108,8 @@ const TOKEN_TTL_HOURS = Number(process.env.TOKEN_TTL_HOURS) || 24;
 const MAX_TOKENS_PER_DAY = Number(process.env.MAX_TOKENS_PER_DAY) || 5;
 const SESSION_TTL_DAYS = 30;
 const ROTATE_INTERVAL_MS = 10 * 60 * 1000;
+const ACTIVE_USER_WINDOW_MS = 15 * 60 * 1000;
+const PUBLIC_STATS_CACHE_MS = 5 * 60 * 1000;
 const FEED_LIMIT = 200;
 const PREVIEW_BYTES = 400;
 const SEARCH_LIMIT = 50;
@@ -252,6 +254,7 @@ const Q = {
      ORDER BY display_name COLLATE NOCASE ASC`
   ),
   insertUser:      db.prepare('INSERT INTO users (username, password_hash, created_at) VALUES (?, ?, ?)'),
+  countUsers:      db.prepare('SELECT COUNT(*) AS n FROM users'),
   findUserById:    db.prepare('SELECT id, password_hash FROM users WHERE id = ?'),
   getUserPwVersion: db.prepare('SELECT pw_version FROM users WHERE id = ?'),
   // Bumping pw_version invalidates every JWT issued before this update;
@@ -765,6 +768,58 @@ function quotaFor(userId) {
   };
 }
 
+const activeUserSalt = crypto.randomBytes(16).toString('hex');
+const activeUsers = new Map();
+let publicStatsCache = null;
+
+function activeUserKey(uid) {
+  return crypto.createHmac('sha256', activeUserSalt).update(String(uid)).digest('hex');
+}
+
+function recordActiveUser(uid) {
+  if (uid == null) return;
+  activeUsers.set(activeUserKey(uid), Date.now());
+}
+
+function activeUserCount(now) {
+  let count = 0;
+  for (const [key, seenAt] of activeUsers) {
+    if (now - seenAt > ACTIVE_USER_WINDOW_MS) {
+      activeUsers.delete(key);
+    } else {
+      count++;
+    }
+  }
+  return count;
+}
+
+function publicActiveLabel(n) {
+  if (n <= 0) return '0';
+  if (n <= 5) return '1-5';
+  if (n <= 10) return '6-10';
+  if (n <= 20) return '11-20';
+  if (n <= 50) return '21-50';
+  return `${Math.floor(n / 50) * 50}+`;
+}
+
+function publicRegisteredLabel(n) {
+  if (n <= 0) return '0';
+  if (n < 10) return '1+';
+  return `${Math.floor(n / 10) * 10}+`;
+}
+
+function publicStats() {
+  const now = Date.now();
+  if (publicStatsCache && publicStatsCache.expiresAt > now) return publicStatsCache.data;
+  const data = {
+    active_label: publicActiveLabel(activeUserCount(now)),
+    registered_label: publicRegisteredLabel(Q.countUsers.get().n || 0),
+    active_window_minutes: Math.round(ACTIVE_USER_WINDOW_MS / 60000),
+  };
+  publicStatsCache = { expiresAt: now + PUBLIC_STATS_CACHE_MS, data };
+  return data;
+}
+
 // Parse @pseudonym mentions out of text and record them against the
 // target pseudonym. Idempotent: callers pre-clear before calling on an
 // edit (see editPost/editComment paths). Runs inside one transaction.
@@ -802,6 +857,12 @@ function rateLimit(key, limit, windowMs = RATE_WINDOW_MS) {
   };
 }
 
+function asyncHandler(fn) {
+  return (req, res, next) => {
+    Promise.resolve(fn(req, res, next)).catch(next);
+  };
+}
+
 setInterval(() => {
   const now = Date.now();
   for (const [k, b] of rateBuckets) if (b.resetAt < now) rateBuckets.delete(k);
@@ -819,6 +880,7 @@ function requireSession(req, res, next) {
     if (!pvRow || (payload.pv | 0) < pvRow.pw_version) {
       return res.status(401).json({ error: '会话无效或已过期' });
     }
+    recordActiveUser(payload.uid);
     req.user = payload;
     next();
   } catch {
@@ -959,6 +1021,10 @@ app.post('/api/send-code', rateLimit('send-code', 5), (req, res) => {
   res.json({ ok: true });
 });
 
+app.get('/api/stats', rateLimit('stats', 60), (req, res) => {
+  res.json(publicStats());
+});
+
 // Atomically claim a per-email send slot: the throttle read and the
 // upsert share one transaction so two concurrent requests can't both
 // pass the 60s check and each trigger an SMTP send.
@@ -986,7 +1052,7 @@ async function processSendCode(email) {
   }
 }
 
-app.post('/api/register', rateLimit('register', 5), async (req, res) => {
+app.post('/api/register', rateLimit('register', 5), asyncHandler(async (req, res) => {
   const { email, error } = parseEmail(req.body && req.body.email);
   const { password, password_confirm, code } = req.body || {};
   const err = error || validatePassword(password);
@@ -1001,7 +1067,6 @@ app.post('/api/register', rateLimit('register', 5), async (req, res) => {
   if (typeof code !== 'string' || !/^\d{6}$/.test(code)) {
     return res.status(400).json(badCode);
   }
-  if (Q.usernameExists.get(email)) return res.status(409).json({ error: '邮箱已被注册' });
 
   const codeRow = Q.findEmailCode.get(email);
   const now = Date.now();
@@ -1024,20 +1089,19 @@ app.post('/api/register', rateLimit('register', 5), async (req, res) => {
   try {
     info = Q.insertUser.run(email, hash, Date.now());
   } catch (e) {
-    // Catches the concurrent-register race: two requests passed the
-    // usernameExists check and both tried to INSERT; the unique index
-    // rejects the second one.
+    // Hide duplicate-account races behind the same code error so the
+    // register endpoint never becomes an email oracle.
     if (e.code === 'SQLITE_CONSTRAINT_UNIQUE') {
-      return res.status(409).json({ error: '邮箱已被注册' });
+      return res.status(400).json(badCode);
     }
     throw e;
   }
   Q.deleteEmailCode.run(email);
   issueSession(res, info.lastInsertRowid, email, false);
   res.json({ ok: true });
-});
+}));
 
-app.post('/api/login', rateLimit('login', 10), async (req, res) => {
+app.post('/api/login', rateLimit('login', 10), asyncHandler(async (req, res) => {
   const { email } = parseEmail(req.body && req.body.email);
   const password = req.body && req.body.password;
   if (!email || typeof password !== 'string') {
@@ -1052,7 +1116,7 @@ app.post('/api/login', rateLimit('login', 10), async (req, res) => {
   const handle = row.is_admin && row.display_name ? row.display_name : row.username;
   issueSession(res, row.id, handle, !!row.is_admin);
   res.json({ ok: true });
-});
+}));
 
 app.post('/api/logout', (req, res) => {
   // Best-effort revoke: if the cookie carries a verifiable JWT with a jti,
@@ -1071,7 +1135,7 @@ app.post('/api/logout', (req, res) => {
   res.json({ ok: true });
 });
 
-app.post('/api/change-password', requireSession, rateLimit('change-password', 5), async (req, res) => {
+app.post('/api/change-password', requireSession, rateLimit('change-password', 5), asyncHandler(async (req, res) => {
   const { current_password, new_password, new_password_confirm } = req.body || {};
   if (typeof current_password !== 'string' || !current_password) {
     return res.status(400).json({ error: '请输入当前密码' });
@@ -1089,12 +1153,13 @@ app.post('/api/change-password', requireSession, rateLimit('change-password', 5)
   Q.updateUserPassword.run(hash, row.id);
   res.clearCookie('session', SESSION_COOKIE_BASE_OPTS);
   res.json({ ok: true });
-});
+}));
 
 app.get('/api/me', requireSession, (req, res) => {
   const q = quotaFor(req.user.uid);
   const admin = isLiveAdmin(req.user.uid);
   res.json({
+    uid: req.user.uid,
     username: req.user.u,
     admin,
     admin_handles: Q.listAdminHandles.all().map((row) => row.display_name),
@@ -1851,6 +1916,12 @@ app.get('/b/:id(\\d+)', (req, res) => {
 // Docs deep-link — same existence-oblivious rule as /p and /b.
 app.get('/d/:id(\\d+)', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+app.use((err, req, res, next) => {
+  console.error('[error]', err && err.message ? err.message : err);
+  if (res.headersSent) return next(err);
+  res.status(500).json({ error: '服务器错误，请稍后重试' });
 });
 
 // Purges expired token hashes, orphan author-edit fingerprints on posts

@@ -12,7 +12,7 @@
     "prepare": "git config --local core.hooksPath .githooks || true"
   },
   "dependencies": {
-    "bcrypt": "^5.1.1",
+    "bcrypt": "^6.0.0",
     "better-sqlite3": "^11.3.0",
     "cookie-parser": "^1.4.6",
     "express": "^4.21.0",

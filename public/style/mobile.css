@@ -92,16 +92,28 @@
   .feed-pane #feed { padding: 0 14px 40px; }
   .feed-pane-head { padding: 12px 14px 10px; }
 
-  /* Auth: single column */
-  .auth { grid-template-columns: 1fr; overflow: auto; }
+  /* Auth: one scrollable intro screen followed by the form screen */
+  .auth {
+    grid-template-columns: 1fr;
+    grid-auto-rows: auto;
+    height: 100%;
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
   .auth-left {
+    min-height: 100vh;
+    min-height: 100svh;
     padding: 32px 22px;
     border-right: none;
     border-bottom: 1px solid var(--ink);
   }
   .auth-h1 { font-size: 36px; }
   .auth-seal-deco { display: none; }
-  .auth-right { padding: 32px 22px; }
+  .auth-right {
+    min-height: 100vh;
+    min-height: 100svh;
+    padding: 32px 22px;
+  }
 }
 
 /* Phone portrait */

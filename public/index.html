@@ -103,6 +103,17 @@
           <p class="auth-sub">注册时会发送 6 位验证码到邮箱，校验通过后再设置密码。</p>
         </div>
 
+        <div class="auth-stats" id="auth-stats" aria-live="polite">
+          <div class="auth-stat" title="最近活跃人数，模糊显示">
+            <span class="auth-stat-k">在线</span>
+            <strong id="auth-active-count">—</strong>
+          </div>
+          <div class="auth-stat" title="总注册人数，模糊显示">
+            <span class="auth-stat-k">已注册</span>
+            <strong id="auth-registered-count">—</strong>
+          </div>
+        </div>
+
         <form id="login-form" class="auth-form" data-mode="login">
           <div class="auth-field">
             <div class="auth-label">
@@ -330,7 +341,7 @@
       <article id="compose-view" class="reader-card" hidden>
         <button class="back" data-close="reader">← 返回</button>
         <h2 id="compose-title">落笔</h2>
-        <p class="muted compose-hint">服务器只记录令牌的哈希，无法把帖子和你连起来。</p>
+        <p id="compose-hint" class="muted compose-hint">服务器只记录令牌的哈希，无法把帖子和你连起来。</p>
         <form id="post-form" class="inline-form">
           <input name="title" placeholder="标题" required maxlength="200">
           <label class="field-row">

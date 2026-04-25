@@ -430,23 +430,27 @@ try {
   );
 }
 
-// Migration to email-based accounts. The old schema allowed arbitrary
-// `username`s; posts/comments never linked back to users, so wiping the
-// users table here is safe for content. FK cascades clear reader-side
-// state (user_channel_prefs, saved_posts). Seeds two debug accounts so
-// the app is usable right after the migration.
+// Migration to email-based accounts. Older dev databases may still carry
+// arbitrary usernames; production must never get known default accounts.
+// For local throwaway DBs only, opt in with DEV_SEED_USERS=1.
 if (db.pragma('user_version', { simple: true }) < 3) {
-  const bcrypt = require('bcrypt');
-  const now = Date.now();
-  db.exec('DELETE FROM users');
-  const seed = db.prepare(
-    `INSERT INTO users (username, password_hash, is_admin, display_name, created_at)
-     VALUES (?, ?, ?, ?, ?)`
-  );
-  seed.run('admin@example.com', bcrypt.hashSync('admin1234', 12), 1, 'Admin01', now);
-  seed.run('user@example.com', bcrypt.hashSync('user1234', 12), 0, null, now);
+  const canSeedDevUsers =
+    process.env.DEV_SEED_USERS === '1' && process.env.NODE_ENV !== 'production';
+  if (canSeedDevUsers) {
+    const bcrypt = require('bcrypt');
+    const now = Date.now();
+    db.exec('DELETE FROM users');
+    const seed = db.prepare(
+      `INSERT INTO users (username, password_hash, is_admin, display_name, created_at)
+       VALUES (?, ?, ?, ?, ?)`
+    );
+    seed.run('admin@example.com', bcrypt.hashSync('admin1234', 12), 1, 'Admin01', now);
+    seed.run('user@example.com', bcrypt.hashSync('user1234', 12), 0, null, now);
+    console.log('[migrate] DEV_SEED_USERS=1 reset users and seeded local debug accounts');
+  } else {
+    console.warn('[migrate] user_version < 3; left users unchanged. Create/promote accounts explicitly.');
+  }
   db.pragma('user_version = 3');
-  console.log('[migrate] users reset; seeded admin@example.com + user@example.com (see README for dev passwords)');
 }
 
 // docs_fts was added after some DBs already had rows in `docs`; backfill once.

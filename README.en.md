@@ -156,6 +156,11 @@ JWT_SECRET=$(openssl rand -hex 32) npm start
 # open http://localhost:3000
 ```
 
+For a throwaway local demo, explicitly enable debug account seeding:
+`DEV_SEED_USERS=1 JWT_SECRET=$(openssl rand -hex 32) npm start`. This resets
+the `users` table and creates `admin@example.com / admin1234` plus
+`user@example.com / user1234`. **Never set this in production.**
+
 Environment variables:
 
 | Var                  | Default               | Purpose                                            |
@@ -169,6 +174,7 @@ Environment variables:
 | `GMAIL_FROM`         | —                     | Override the sender display name                   |
 | `DEPT_ALLOWLIST_FILE`| `./dept-allowlist.txt` | Path to the registration allowlist                |
 | `TRUST_PROXY`        | —                     | Set to `1` or a CIDR behind a proxy so `req.ip` reads `X-Forwarded-For`. |
+| `DEV_SEED_USERS`     | —                     | Local debug only: `1` resets and seeds debug users; never set in production. |
 
 Without `GMAIL_USER` / `GMAIL_APP_PASSWORD` the verification code is
 logged to the server console — convenient for local dev.

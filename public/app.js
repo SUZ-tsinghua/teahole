@@ -561,6 +561,9 @@ function renderUserMenu(me) {
   if (!me) return;
 
   const initial = ((me.username || '你').trim()[0] || '你').toUpperCase();
+  const accountLines = [`@${me.username}`];
+  if (me.uid != null) accountLines.push(`UID: ${me.uid}`);
+  if (me.admin) accountLines.push('管理员');
   const toggle = el('button', {
     type: 'button',
     className: 'user-chip',
@@ -622,8 +625,7 @@ function renderUserMenu(me) {
       el('div', { className: 'user-menu-title', textContent: '设置' }),
       el('div', {
         className: 'user-menu-account',
-        textContent: `@${me.username}${me.admin ? ' · 管理员' : ''}`,
-      }),
+      }, accountLines.map((line) => el('span', { textContent: line }))),
     ]),
     changePwBtn,
     pwForm,
@@ -705,6 +707,7 @@ async function refreshMe() {
     $('#userbar').innerHTML = '';
     $('#mention-dot').hidden = true;
     stopPollingMentions();
+    loadAuthStats();
   }
 }
 
@@ -719,6 +722,22 @@ async function logout() {
 let sendCodeCooldownIv = null;
 
 // SECTION: auth-form
+function renderAuthStats(stats) {
+  const active = $('#auth-active-count');
+  const registered = $('#auth-registered-count');
+  if (!active || !registered) return;
+  active.textContent = stats && stats.active_label ? stats.active_label : '—';
+  registered.textContent = stats && stats.registered_label ? stats.registered_label : '—';
+}
+
+async function loadAuthStats() {
+  try {
+    renderAuthStats(await api('GET', '/api/stats'));
+  } catch {
+    renderAuthStats(null);
+  }
+}
+
 function stopSendCodeCooldown() {
   if (sendCodeCooldownIv) {
     clearInterval(sendCodeCooldownIv);
@@ -2166,7 +2185,7 @@ function openCompose() {
   f.reset();
   renderComposeChannels();
   resetPollBuilder();
-  $('.compose-hint').textContent = isAdmin
+  $('#compose-hint').textContent = isAdmin
     ? '管理员发言会直接显示用户名；其他令牌能力仍按 24 小时窗口管理。'
     : '服务器只记录令牌的哈希，无法把帖子和你连起来。';
   $('#post-submit').textContent = isAdmin ? '公开发布' : '匿名发布';

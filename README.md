@@ -122,6 +122,11 @@ JWT_SECRET=$(openssl rand -hex 32) npm start
 # 打开 http://localhost:3000
 ```
 
+如果只是本地临时体验，可以显式打开调试账号种子：
+`DEV_SEED_USERS=1 JWT_SECRET=$(openssl rand -hex 32) npm start`。这会重置
+`users` 表并创建 `admin@example.com / admin1234` 和
+`user@example.com / user1234`，**生产环境不要设置这个变量**。
+
 环境变量：
 
 | 变量                  | 默认         | 作用                                             |
@@ -135,6 +140,7 @@ JWT_SECRET=$(openssl rand -hex 32) npm start
 | `GMAIL_FROM`         | —            | 覆盖发件人显示名                                   |
 | `DEPT_ALLOWLIST_FILE`| `./dept-allowlist.txt` | 注册白名单文件路径                    |
 | `TRUST_PROXY`        | —            | 反向代理后填 `1` 或 CIDR，让 `req.ip` 取真实客户端 IP |
+| `DEV_SEED_USERS`     | —            | 仅本地调试：设为 `1` 时重置并种下调试账号；生产勿设       |
 
 未设 `GMAIL_USER` / `GMAIL_APP_PASSWORD` 时，验证码直接打到服务端日志，方便本地开发。
 
