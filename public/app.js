@@ -12,7 +12,7 @@
 //   SECTION: token-ui           token chip + dialogs (mint/rotate)
 //   SECTION: auth-form          login / register / send-code UI
 //   SECTION: feed                feed list + channel filter bar
-//   SECTION: saved-followed     saved-posts + followed-posts UI
+//   SECTION: saved             saved-posts + saved-docs UI
 //   SECTION: bulletins          bulletin list + admin dialog
 //   SECTION: docs               shared-doc list/reader/editor
 //   SECTION: compose-upload     image picker wiring for the composer
@@ -253,7 +253,6 @@ let currentThread = null;
 let currentComments = [];
 let currentReactionCounts = null;
 let currentSaveCount = 0;
-let currentFollowCount = 0;
 let currentPostPseudonym = null;
 let currentPostCanDelete = false;
 let feedPosts = [];
@@ -273,8 +272,6 @@ let savedDocIds = new Set();
 let channelPrefs = new Map();
 let mutedExpanded = false;
 let channelSearchQ = '';
-let followedIds = new Set();
-let followedUnreadTotal = 0;
 // channelId -> unread post count since last visit.
 let channelUnread = new Map();
 let isAdmin = false;
@@ -497,7 +494,6 @@ document.addEventListener('click', (e) => {
   else if (kind === 'channel') closeChannelDialog();
   else if (kind === 'bulletin') closeBulletinDialog();
   else if (kind === 'bulletin-view') closeBulletinViewDialog();
-  else if (kind === 'followed') closeFollowedDialog();
   else if (kind === 'help') closeHelpDialog();
   else if (kind === 'reader') closeReader();
 });
@@ -634,7 +630,6 @@ async function refreshMe() {
     await loadSavedIds();
     await loadChannelPrefs();
     await loadChannelUnread();
-    await loadFollowed();
     await loadFeed();
     renderComposeButton();
     renderFeedTabs();
@@ -1142,7 +1137,7 @@ function renderComposeChannels() {
   if (prev && channels.some((c) => String(c.id) === prev)) sel.value = prev;
 }
 
-// SECTION: saved-followed
+// SECTION: saved
 // --- Saved posts (account-scoped reader state) ---
 
 async function loadSavedIds() {
@@ -1159,86 +1154,6 @@ async function loadSavedIds() {
     savedDocIds = new Set();
   }
 }
-
-let lastFollowedPosts = [];
-async function loadFollowed() {
-  try {
-    const r = await api('GET', '/api/followed');
-    followedIds = new Set(r.ids);
-    lastFollowedPosts = r.posts || [];
-    followedUnreadTotal = lastFollowedPosts.reduce((n, p) => n + (p.unread || 0), 0);
-  } catch {
-    followedIds = new Set();
-    lastFollowedPosts = [];
-    followedUnreadTotal = 0;
-  }
-  renderFollowedBadge();
-}
-
-function renderFollowedBadge() {
-  const dot = $('#followed-badge');
-  if (!dot) return;
-  if (followedUnreadTotal > 0) {
-    dot.hidden = false;
-    dot.textContent = followedUnreadTotal > 99 ? '99+' : String(followedUnreadTotal);
-  } else {
-    dot.hidden = true;
-  }
-}
-
-async function toggleFollow(postId) {
-  const wasFollowed = followedIds.has(postId);
-  try {
-    const r = await api(wasFollowed ? 'DELETE' : 'POST', `/api/followed/${postId}`);
-    if (wasFollowed) followedIds.delete(postId); else followedIds.add(postId);
-    if (currentThread === postId && r.follow_count != null) currentFollowCount = r.follow_count;
-    await loadFollowed();
-    renderThreadActions();
-  } catch (err) {
-    alert(err.message);
-  }
-}
-
-async function markFollowedSeen(postId) {
-  if (!followedIds.has(postId)) return;
-  try {
-    await api('POST', `/api/followed/${postId}`);
-    await loadFollowed();
-  } catch {}
-}
-
-function openFollowedDialog() {
-  const box = $('#followed-list');
-  box.innerHTML = '';
-  if (!lastFollowedPosts.length) {
-    box.appendChild(el('div', { className: 'muted', textContent: '还没有关注任何帖子。' }));
-  } else {
-    for (const p of lastFollowedPosts) box.appendChild(renderFollowedItem(p));
-  }
-  $('#followed-dialog').hidden = false;
-}
-function closeFollowedDialog() { $('#followed-dialog').hidden = true; }
-
-function renderFollowedItem(p) {
-  const title = el('div', { className: 'mention-head' });
-  title.appendChild(el('span', { className: 'mention-sender', textContent: `#${p.post_id}` }));
-  title.appendChild(el('span', { textContent: ' ' + p.title }));
-  if (p.unread > 0) {
-    title.appendChild(el('span', { className: 'follow-unread', textContent: `${p.unread} 条新评论` }));
-  }
-  const foot = el('div', { className: 'meta', textContent: `${p.pseudonym} · ${fmtDate(p.created_at)}` });
-  applyIdHue(foot, p.pseudonym);
-  const item = el('div', { className: 'mention-item-card' + (p.unread > 0 ? ' has-unread' : '') }, [title, foot]);
-  item.addEventListener('click', () => {
-    closeFollowedDialog();
-    openThread(p.post_id).catch(() => {});
-  });
-  return item;
-}
-
-$('#followed-btn').addEventListener('click', () => {
-  loadFollowed().finally(() => openFollowedDialog());
-});
 
 async function toggleSaved(postId) {
   const wasSaved = savedIds.has(postId);
@@ -1258,8 +1173,8 @@ async function toggleSavedDoc(docId) {
   try {
     const r = await api(wasSaved ? 'DELETE' : 'POST', `/api/saved-docs/${docId}`);
     if (wasSaved) savedDocIds.delete(docId); else savedDocIds.add(docId);
-    if (currentDocRow && currentDocRow.id === docId && r.follow_count != null) {
-      currentDocRow.follow_count = r.follow_count;
+    if (currentDocRow && currentDocRow.id === docId && r.save_count != null) {
+      currentDocRow.save_count = r.save_count;
     }
     renderDocActions(currentDocRow);
     if (filterState.kind === 'saved' && feedMode === 'docs') await loadDocs();
@@ -1804,7 +1719,7 @@ function renderDocActions(row) {
       const followBtn = makeStatPill({
         emoji: saved ? '★' : '☆',
         label: '收藏',
-        count: row.follow_count ?? 0,
+        count: row.save_count ?? 0,
         active: saved,
         onClick: () => toggleSavedDoc(row.id),
       });
@@ -2135,7 +2050,6 @@ function renderPostCard(p) {
   }));
   foot.appendChild(el('span', { className: 'grow' }));
   if (savedIds.has(p.id)) foot.appendChild(el('span', { className: 'saved-tag', textContent: '★ 收藏' }));
-  if (followedIds.has(p.id)) foot.appendChild(el('span', { className: 'following-tag', textContent: '◉ 关注' }));
 
   const node = el('div', { className: 'post' }, [metaRow, titleRow, excerpt, foot]);
   node.dataset.postId = p.id;
@@ -2553,23 +2467,13 @@ function renderThreadActions() {
   const box = $('#thread-actions');
   box.innerHTML = '';
   if (currentThread == null) { box.hidden = true; return; }
-  const pills = [
-    makeStatPill({
-      emoji: savedIds.has(currentThread) ? '★' : '☆',
-      label: '收藏',
-      count: currentSaveCount,
-      active: savedIds.has(currentThread),
-      onClick: () => toggleSaved(currentThread),
-    }),
-    makeStatPill({
-      emoji: followedIds.has(currentThread) ? '🔔' : '🔕',
-      label: '关注',
-      count: currentFollowCount,
-      active: followedIds.has(currentThread),
-      onClick: () => toggleFollow(currentThread),
-    }),
-  ];
-  box.append(...pills);
+  box.appendChild(makeStatPill({
+    emoji: savedIds.has(currentThread) ? '★' : '☆',
+    label: '收藏',
+    count: currentSaveCount,
+    active: savedIds.has(currentThread),
+    onClick: () => toggleSaved(currentThread),
+  }));
   if (currentPostCanDelete) {
     const del = el('button', { type: 'button', className: 'ghost small danger', textContent: '删除' });
     del.addEventListener('click', () => deletePost());
@@ -2617,8 +2521,7 @@ async function openThread(id, { pushUrl = true } = {}) {
   const deleted = !!post.deleted_at;
   currentComments = comments.slice();
   currentReactionCounts = normalizedReactionCounts(reactions);
-  currentSaveCount   = data.save_count   ?? 0;
-  currentFollowCount = data.follow_count ?? 0;
+  currentSaveCount = data.save_count ?? 0;
   syncFeedPostStats(id, { reactions, commentCount: comments.length });
   currentPostPseudonym = deleted ? null : post.pseudonym;
   currentPostCanDelete = !deleted && canDeleteAuthor(post.author_key);
@@ -2666,14 +2569,12 @@ async function openThread(id, { pushUrl = true } = {}) {
   $('#comment-form').hidden = deleted;
   showReader(VIEW.THREAD);
   readerNode.scrollTo({ top: 0, behavior: 'instant' });
-  if (!deleted) markFollowedSeen(id).catch(() => {});
 }
 
 function renderMissingThread(id, message) {
   currentComments = [];
   currentReactionCounts = null;
   currentSaveCount = 0;
-  currentFollowCount = 0;
   currentPostPseudonym = null;
   currentPostCanDelete = false;
   renderThreadBack();
@@ -3140,7 +3041,6 @@ function schedulePollingMentions() {
   stopPollingMentions();
   mentionPollTimer = setInterval(() => {
     refreshMentions({ silent: true }).catch(() => {});
-    loadFollowed().catch(() => {});
     loadChannelUnread().catch(() => {});
   }, MENTION_POLL_MS);
 }
@@ -3677,7 +3577,6 @@ document.addEventListener('keydown', (e) => {
   if (!$('#channel-dialog').hidden) { closeChannelDialog(); return; }
   if (!$('#bulletin-dialog').hidden) { closeBulletinDialog(); return; }
   if (!$('#bulletin-view-dialog').hidden) { closeBulletinViewDialog(); return; }
-  if (!$('#followed-dialog').hidden) { closeFollowedDialog(); return; }
   if (!$('#help-dialog').hidden) { closeHelpDialog(); return; }
   if (!$('#token-dialog').hidden) { closeDialog(); return; }
   if (!$('#mentions-dialog').hidden) { closeMentionsDialog(); return; }

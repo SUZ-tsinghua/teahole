@@ -345,8 +345,6 @@
 .post-foot .post-stat.is-empty { color: var(--ink-4); }
 .post-foot .grow { flex: 1; }
 .post-foot .saved-tag { color: var(--gold); }
-.post-foot .following-tag { color: var(--jade-deep); }
-:root[data-theme="dark"] .post-foot .following-tag { color: var(--jade-deep); }
 
 .meta {
   font-family: var(--mono);

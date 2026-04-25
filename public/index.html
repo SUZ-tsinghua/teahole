@@ -180,10 +180,6 @@
         <button id="saved-filter-btn" class="rail-btn" type="button" title="我的收藏">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M12 2 L15 8 L22 9 L17 14 L18 21 L12 18 L6 21 L7 14 L2 9 L9 8 Z"/></svg>
         </button>
-        <button id="followed-btn" class="rail-btn" type="button" title="关注的帖子">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M5 4 L5 20 L12 16 L19 20 L19 4 Z"/></svg>
-          <span id="followed-badge" class="rail-badge" hidden></span>
-        </button>
       </div>
     </aside>
 
@@ -470,8 +466,8 @@
         <p>频道由管理员创建，按话题归档。你可以 📌 置顶常去的频道、🔔 静音不关心的频道。公告由管理员发布，固定在侧栏。</p>
       </section>
       <section class="help-section">
-        <h3>提醒 · 关注 · 收藏</h3>
-        <p><code>@8字符ID</code> 会提醒对方（左侧栏的「提醒」入口查看）；你也可以<strong>关注</strong>具体帖子，新评论会给出计数；<strong>收藏</strong>的帖子绑定在账号上，换令牌也不会丢。</p>
+        <h3>提醒 · 收藏</h3>
+        <p><code>@8字符ID</code> 会提醒对方（左侧栏的「提醒」入口查看）；<strong>收藏</strong>的帖子和共享文档绑定在账号上，换令牌也不会丢。</p>
       </section>
       <section class="help-section">
         <h3>共享文档</h3>
@@ -487,18 +483,6 @@
       </section>
       <div class="row">
         <button type="button" class="ghost" data-close="help">关闭</button>
-      </div>
-    </div>
-  </div>
-
-  <div id="followed-dialog" class="dialog" hidden>
-    <div class="dialog-backdrop" data-close="followed"></div>
-    <div class="dialog-card">
-      <h2>关注的帖子</h2>
-      <p class="muted">在打开的帖子页面点击「🔕 关注」可以订阅后续评论，列表按未读评论数排序。</p>
-      <div id="followed-list" class="mentions-list"></div>
-      <div class="row">
-        <button type="button" class="ghost" data-close="followed">关闭</button>
       </div>
     </div>
   </div>

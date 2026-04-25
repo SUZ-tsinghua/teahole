@@ -546,17 +546,6 @@
   text-align: center;
   font-family: var(--mono);
 }
-.follow-unread {
-  display: inline-block;
-  margin-left: 8px;
-  padding: 1px 7px;
-  font-size: 11px;
-  color: var(--seal);
-  background: var(--seal-soft);
-  border-radius: 999px;
-  font-family: var(--mono);
-}
-.mention-item-card.has-unread { border-left: 2px solid var(--seal); }
 
 /* Channel badge (§ tag used in reader) */
 .channel-badge {

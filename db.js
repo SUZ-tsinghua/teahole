@@ -184,19 +184,6 @@ CREATE TABLE IF NOT EXISTS revoked_sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_revoked_sessions_exp ON revoked_sessions(expires_at);
 
--- Followed threads: reader-side state only. last_seen_comment_id lets
--- the client compute unread counts without the server exposing who has
--- read what in any content-read endpoint.
-CREATE TABLE IF NOT EXISTS followed_posts (
-  user_id INTEGER NOT NULL,
-  post_id INTEGER NOT NULL,
-  followed_at INTEGER NOT NULL,
-  last_seen_comment_id INTEGER NOT NULL DEFAULT 0,
-  PRIMARY KEY (user_id, post_id),
-  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-  FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE
-);
-
 -- Per-user channel preferences (pinned / muted / last-seen). Reader-
 -- side state only; purely a display / unread-counter preference.
 -- Cascades on user + channel delete.
@@ -442,8 +429,8 @@ try {
 // Migration to email-based accounts. The old schema allowed arbitrary
 // `username`s; posts/comments never linked back to users, so wiping the
 // users table here is safe for content. FK cascades clear reader-side
-// state (followed_posts, user_channel_prefs, saved_posts). Seeds two
-// debug accounts so the app is usable right after the migration.
+// state (user_channel_prefs, saved_posts). Seeds two debug accounts so
+// the app is usable right after the migration.
 if (db.pragma('user_version', { simple: true }) < 3) {
   const bcrypt = require('bcrypt');
   const now = Date.now();
@@ -462,6 +449,14 @@ if (db.pragma('user_version', { simple: true }) < 3) {
 if (db.pragma('user_version', { simple: true }) < 4) {
   db.exec("INSERT INTO docs_fts(docs_fts) VALUES('rebuild')");
   db.pragma('user_version = 4');
+}
+
+// Drop the legacy `followed_posts` table. The post-follow feature was
+// removed in favor of post-save (★ 收藏); the table is reader-side
+// state only, so dropping it can't affect post content.
+if (db.pragma('user_version', { simple: true }) < 5) {
+  db.exec('DROP TABLE IF EXISTS followed_posts');
+  db.pragma('user_version = 5');
 }
 
 // Assign Admin## display names to any admin that doesn't have one yet.
