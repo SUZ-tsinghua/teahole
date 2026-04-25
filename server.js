@@ -252,6 +252,8 @@ const Q = {
      ORDER BY display_name COLLATE NOCASE ASC`
   ),
   insertUser:      db.prepare('INSERT INTO users (username, password_hash, created_at) VALUES (?, ?, ?)'),
+  findUserById:    db.prepare('SELECT id, password_hash FROM users WHERE id = ?'),
+  updateUserPassword: db.prepare('UPDATE users SET password_hash = ? WHERE id = ?'),
   findUserQuota:   db.prepare('SELECT tokens_issued_date, tokens_issued_count FROM users WHERE id = ?'),
   bumpTokenCount:  db.prepare('UPDATE users SET tokens_issued_date = ?, tokens_issued_count = ? WHERE id = ?'),
   insertToken:     db.prepare('INSERT INTO post_tokens (token_hash, expires_at) VALUES (?, ?)'),
@@ -1058,6 +1060,25 @@ app.post('/api/logout', (req, res) => {
     } catch {}
   }
   res.clearCookie('session', SESSION_COOKIE_BASE_OPTS);
+  res.json({ ok: true });
+});
+
+app.post('/api/change-password', requireSession, rateLimit('change-password', 5), async (req, res) => {
+  const { current_password, new_password, new_password_confirm } = req.body || {};
+  if (typeof current_password !== 'string' || !current_password) {
+    return res.status(400).json({ error: '请输入当前密码' });
+  }
+  const err = validatePassword(new_password);
+  if (err) return res.status(400).json({ error: err });
+  if (new_password !== new_password_confirm) {
+    return res.status(400).json({ error: '两次输入的密码不一致' });
+  }
+  const row = Q.findUserById.get(req.user.uid);
+  if (!row) return res.status(400).json({ error: '用户不存在' });
+  const ok = await bcrypt.compare(current_password, row.password_hash);
+  if (!ok) return res.status(401).json({ error: '当前密码错误' });
+  const hash = await bcrypt.hash(new_password, 12);
+  Q.updateUserPassword.run(hash, row.id);
   res.json({ ok: true });
 });
 

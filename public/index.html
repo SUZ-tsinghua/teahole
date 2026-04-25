@@ -132,7 +132,6 @@
 
           <div class="auth-submit-row">
             <button type="submit" id="auth-submit" class="auth-submit-btn">登录 →</button>
-            <span class="auth-alt-text"><a href="#" id="register-btn">注册账号</a></span>
           </div>
           <div class="auth-err" id="auth-err"></div>
           <div class="auth-info-msg" id="auth-info"></div>
@@ -224,7 +223,7 @@
     <aside id="sidebar" class="sidebar">
       <div class="sidebar-head">
         <button id="compose-btn" class="compose-btn">
-          <span class="compose-kanji">落</span><span>发新帖</span>
+          <span class="plus">＋</span><span> 发新帖</span>
         </button>
         <button id="token-toggle" class="token-status" type="button">
           <span class="dot"></span>
@@ -500,20 +499,6 @@
   </div>
 </main>
 
-<script>
-// Auth tabs delegate to setAuthMode() defined in app.js (loaded below).
-(function() {
-  var tabLogin    = document.getElementById('auth-tab-login');
-  var tabRegister = document.getElementById('auth-tab-register');
-  if (tabLogin)    tabLogin.addEventListener('click',    function() { setAuthMode('login'); });
-  if (tabRegister) tabRegister.addEventListener('click', function() { setAuthMode('register'); });
-
-  // Mirror auth-page theme toggle to the main toggle (also in app.js scope).
-  var authThemeBtn = document.getElementById('theme-toggle-auth');
-  var mainThemeBtn = document.getElementById('theme-toggle');
-  if (authThemeBtn && mainThemeBtn) authThemeBtn.addEventListener('click', function() { mainThemeBtn.click(); });
-})();
-</script>
 
 <script src="/vendor/katex/katex.min.js"></script>
 <script src="/app.js"></script>

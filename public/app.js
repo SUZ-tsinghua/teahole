@@ -80,6 +80,10 @@ $('#theme-toggle').addEventListener('click', () => {
   const cur = document.documentElement.getAttribute('data-theme');
   applyTheme(cur === 'dark' ? 'light' : 'dark');
 });
+$('#theme-toggle-auth')?.addEventListener('click', () => {
+  const cur = document.documentElement.getAttribute('data-theme');
+  applyTheme(cur === 'dark' ? 'light' : 'dark');
+});
 
 // Mobile sidebar drawer: hamburger toggle + backdrop dismissal.
 $('#sidebar-toggle').addEventListener('click', () => {
@@ -569,6 +573,53 @@ function renderUserMenu(me) {
   toggle.setAttribute('aria-haspopup', 'menu');
   toggle.setAttribute('aria-expanded', 'false');
 
+  const pwErrNode = el('div', { className: 'user-menu-pw-err' });
+  const pwOkNode = el('div', { className: 'user-menu-pw-ok', hidden: true, textContent: '密码已修改' });
+  const pwForm = el('form', { className: 'user-menu-pw-form', hidden: true });
+  pwForm.append(
+    el('input', { type: 'password', name: 'current_password', placeholder: '当前密码', autocomplete: 'current-password', required: true }),
+    el('input', { type: 'password', name: 'new_password', placeholder: '新密码（8–128 位）', autocomplete: 'new-password', required: true }),
+    el('input', { type: 'password', name: 'new_password_confirm', placeholder: '再次输入新密码', autocomplete: 'new-password', required: true }),
+    pwErrNode,
+    pwOkNode,
+    el('div', { className: 'user-menu-pw-actions' }, [
+      el('button', { type: 'submit', className: 'user-menu-item', textContent: '确认修改' }),
+      el('button', {
+        type: 'button',
+        className: 'user-menu-item',
+        textContent: '取消',
+        onclick: () => { pwForm.hidden = true; pwForm.reset(); pwErrNode.textContent = ''; pwOkNode.hidden = true; },
+      }),
+    ]),
+  );
+  pwForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    pwErrNode.textContent = '';
+    pwOkNode.hidden = true;
+    try {
+      await api('POST', '/api/change-password', {
+        current_password: pwForm.current_password.value,
+        new_password: pwForm.new_password.value,
+        new_password_confirm: pwForm.new_password_confirm.value,
+      });
+      pwForm.reset();
+      pwOkNode.hidden = false;
+    } catch (err) {
+      pwErrNode.textContent = err.message;
+    }
+  });
+  const changePwBtn = el('button', {
+    type: 'button',
+    className: 'user-menu-item',
+    textContent: '修改密码',
+    onclick: () => {
+      pwForm.hidden = !pwForm.hidden;
+      if (!pwForm.hidden) pwForm.querySelector('input').focus();
+      pwErrNode.textContent = '';
+      pwOkNode.hidden = true;
+    },
+  });
+
   const menu = el('div', { className: 'user-menu', hidden: true }, [
     el('div', { className: 'user-menu-head' }, [
       el('div', { className: 'user-menu-title', textContent: '设置' }),
@@ -577,10 +628,8 @@ function renderUserMenu(me) {
         textContent: `@${me.username}${me.admin ? ' · 管理员' : ''}`,
       }),
     ]),
-    el('div', {
-      className: 'user-menu-note',
-      textContent: '这里后续可以加入修改密码、更换邮箱等账号设置。',
-    }),
+    changePwBtn,
+    pwForm,
     el('button', {
       type: 'button',
       className: 'user-menu-item danger',
@@ -692,7 +741,6 @@ function setAuthMode(mode) {
   confirm.hidden = !register;
   confirm.required = register;
   $('#auth-submit').textContent = register ? '创建账号' : '登录';
-  $('#register-btn').textContent = register ? '返回登录' : '注册';
   f.password.autocomplete = register ? 'new-password' : 'current-password';
   $('#auth-err').textContent = '';
   $('#auth-info').textContent = '';
@@ -762,10 +810,8 @@ async function sendCode() {
 }
 
 $('#login-form').addEventListener('submit', (e) => { e.preventDefault(); authSubmit(); });
-$('#register-btn').addEventListener('click', () => {
-  const cur = $('#login-form').dataset.mode || 'login';
-  setAuthMode(cur === 'register' ? 'login' : 'register');
-});
+$('#auth-tab-login')?.addEventListener('click', () => setAuthMode('login'));
+$('#auth-tab-register')?.addEventListener('click', () => setAuthMode('register'));
 $('#send-code-btn').addEventListener('click', sendCode);
 
 async function issueNewToken(errNode) {
