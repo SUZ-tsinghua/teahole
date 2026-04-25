@@ -558,6 +558,9 @@ function renderUserMenu(me) {
   if (!box) return;
   box.classList.remove('is-open');
   box.innerHTML = '';
+  // Kill any cooldown left over from a previous render — the
+  // setInterval would otherwise tick against a now-detached button.
+  if (emailCodeCooldownIv) { clearInterval(emailCodeCooldownIv); emailCodeCooldownIv = null; }
   if (!me) return;
 
   const initial = ((me.username || '你').trim()[0] || '你').toUpperCase();
@@ -620,6 +623,89 @@ function renderUserMenu(me) {
     },
   });
 
+  const emErrNode = el('div', { className: 'user-menu-pw-err' });
+  const emInfoNode = el('div', { className: 'user-menu-pw-info' });
+  const emForm = el('form', { className: 'user-menu-pw-form', hidden: true });
+  const emEmail = el('input', { type: 'email', name: 'email', placeholder: '新邮箱', autocomplete: 'email', required: true });
+  const emCodeInput = el('input', { name: 'code', placeholder: '6 位验证码', autocomplete: 'one-time-code', inputMode: 'numeric', maxLength: 6, required: true });
+  const emSendBtn = el('button', { type: 'button', className: 'user-menu-item', textContent: '发送验证码' });
+  const emPassword = el('input', { type: 'password', name: 'current_password', placeholder: '当前密码', autocomplete: 'current-password', required: true });
+  emForm.append(
+    emEmail,
+    el('div', { className: 'user-menu-pw-actions' }, [emCodeInput, emSendBtn]),
+    emPassword,
+    emInfoNode,
+    emErrNode,
+    el('div', { className: 'user-menu-pw-actions' }, [
+      el('button', { type: 'submit', className: 'user-menu-item', textContent: '确认修改' }),
+      el('button', {
+        type: 'button',
+        className: 'user-menu-item',
+        textContent: '取消',
+        onclick: () => {
+          emForm.hidden = true; emForm.reset();
+          emErrNode.textContent = ''; emInfoNode.textContent = '';
+          stopEmailCodeCooldown();
+        },
+      }),
+    ]),
+  );
+  // The interval id is stashed at module scope (see top of this file)
+  // because renderUserMenu is called whenever refreshMe runs — a fresh
+  // call replaces emSendBtn but a closure-local id would leak the
+  // setInterval onto a detached node.
+  function stopEmailCodeCooldown() {
+    if (emailCodeCooldownIv) { clearInterval(emailCodeCooldownIv); emailCodeCooldownIv = null; }
+    emSendBtn.textContent = '发送验证码';
+    emSendBtn.disabled = false;
+  }
+  emSendBtn.addEventListener('click', async () => {
+    emErrNode.textContent = ''; emInfoNode.textContent = '';
+    if (!emEmail.value) { emErrNode.textContent = '请先填写新邮箱'; return; }
+    emSendBtn.disabled = true;
+    try {
+      await api('POST', '/api/change-email/send-code', { email: emEmail.value });
+      emInfoNode.textContent = '验证码已发送（10 分钟内有效）';
+      stopEmailCodeCooldown();
+      let left = 60;
+      emSendBtn.textContent = `${left}s`;
+      emSendBtn.disabled = true;
+      emailCodeCooldownIv = setInterval(() => {
+        left -= 1;
+        if (left <= 0) stopEmailCodeCooldown();
+        else emSendBtn.textContent = `${left}s`;
+      }, 1000);
+    } catch (err) {
+      emErrNode.textContent = err.message;
+      emSendBtn.disabled = false;
+    }
+  });
+  emForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    emErrNode.textContent = '';
+    try {
+      await api('POST', '/api/change-email', {
+        email: emEmail.value,
+        code: emCodeInput.value,
+        password: emPassword.value,
+      });
+      stopEmailCodeCooldown();
+      logout();
+    } catch (err) {
+      emErrNode.textContent = err.message;
+    }
+  });
+  const changeEmailBtn = el('button', {
+    type: 'button',
+    className: 'user-menu-item',
+    textContent: '修改邮箱',
+    onclick: () => {
+      emForm.hidden = !emForm.hidden;
+      if (!emForm.hidden) emEmail.focus();
+      emErrNode.textContent = ''; emInfoNode.textContent = '';
+    },
+  });
+
   const menu = el('div', { className: 'user-menu', hidden: true }, [
     el('div', { className: 'user-menu-head' }, [
       el('div', { className: 'user-menu-title', textContent: '设置' }),
@@ -629,6 +715,8 @@ function renderUserMenu(me) {
     ]),
     changePwBtn,
     pwForm,
+    changeEmailBtn,
+    emForm,
     el('button', {
       type: 'button',
       className: 'user-menu-item danger',
@@ -720,6 +808,7 @@ async function logout() {
 }
 
 let sendCodeCooldownIv = null;
+let emailCodeCooldownIv = null;
 
 // SECTION: auth-form
 function renderAuthStats(stats) {

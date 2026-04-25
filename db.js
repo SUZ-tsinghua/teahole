@@ -294,6 +294,19 @@ CREATE TABLE IF NOT EXISTS email_codes (
 );
 CREATE INDEX IF NOT EXISTS idx_email_codes_expires ON email_codes(expires_at);
 
+-- Former emails for accounts that have changed their login email.
+-- Account-scoped only: never joined to posts/comments/docs, so adding
+-- a row here cannot link a user to their content. PK (user_id, email)
+-- already supports the only access pattern (lookup by user_id), so no
+-- separate index. Cascades on user delete to leave no email residue.
+CREATE TABLE IF NOT EXISTS user_email_history (
+  user_id INTEGER NOT NULL,
+  email TEXT NOT NULL,
+  replaced_at INTEGER NOT NULL,
+  PRIMARY KEY (user_id, email),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
 CREATE TRIGGER IF NOT EXISTS posts_ai AFTER INSERT ON posts BEGIN
   INSERT INTO posts_fts(rowid, title, content) VALUES (new.id, new.title, new.content);
 END;

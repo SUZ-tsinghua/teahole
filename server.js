@@ -85,6 +85,20 @@ function isAllowedEmail(email) {
   return allowedEmailHashes.has(hashToken(email));
 }
 
+// Login-time variant: lets a member who's rotated to a new address
+// (graduation, alumni redirect…) keep access via a former allowlisted
+// email even after the new one isn't on the roster. Q.* are bound by
+// the time any request handler calls this.
+function userHasAllowlistedEmail(uid) {
+  if (allowedEmailHashes === null) return false;
+  const cur = Q.getUserEmail.get(uid);
+  if (cur && allowedEmailHashes.has(hashToken(cur.username))) return true;
+  for (const row of Q.listUserEmailHistory.all(uid)) {
+    if (allowedEmailHashes.has(hashToken(row.email))) return true;
+  }
+  return false;
+}
+
 async function sendVerificationEmail(to, code) {
   const transport = getMailTransport();
   if (!transport) {
@@ -531,6 +545,20 @@ const Q = {
             d.created_at, d.updated_at
      FROM saved_docs s JOIN docs d ON d.id = s.doc_id
      WHERE s.user_id = ? ORDER BY s.created_at DESC LIMIT ${FEED_LIMIT}`
+  ),
+  getUserEmail:    db.prepare('SELECT username FROM users WHERE id = ?'),
+  listUserEmailHistory: db.prepare(
+    'SELECT email FROM user_email_history WHERE user_id = ?'
+  ),
+  insertUserEmailHistory: db.prepare(
+    `INSERT OR IGNORE INTO user_email_history (user_id, email, replaced_at)
+     VALUES (?, ?, ?)`
+  ),
+  deleteUserEmailHistoryFor: db.prepare(
+    'DELETE FROM user_email_history WHERE user_id = ? AND email = ?'
+  ),
+  updateUserEmail: db.prepare(
+    `UPDATE users SET username = ?, pw_version = pw_version + 1 WHERE id = ?`
   ),
   findEmailCode:   db.prepare('SELECT code_hash, expires_at, attempts, created_at FROM email_codes WHERE email = ?'),
   upsertEmailCode: db.prepare(
@@ -995,6 +1023,26 @@ function publicHandleFor(user, authorKey) {
   return authorKey;
 }
 
+// Validate a 6-digit email code without deleting it on success — callers
+// remove the row in their own transaction after they finish using it.
+// Returns false on bad shape, expiry, exceeded attempts, or wrong code,
+// and bumps the attempts counter on a wrong-code submission so a probe
+// can't burn unlimited attempts inside the TTL.
+function consumeEmailCode(email, code) {
+  if (typeof code !== 'string' || !/^\d{6}$/.test(code)) return false;
+  const row = Q.findEmailCode.get(email);
+  if (!row || row.expires_at < Date.now()) return false;
+  if (row.attempts >= EMAIL_CODE_MAX_ATTEMPTS) {
+    Q.deleteEmailCode.run(email);
+    return false;
+  }
+  if (row.code_hash !== hashToken(code)) {
+    Q.bumpEmailCodeAttempts.run(email);
+    return false;
+  }
+  return true;
+}
+
 // Recompute the mention pointers for a comment. Old mentions are cleared
 // first so edits don't leave stale rows. Posts route mention writes through
 // createPostTx so the whole post commit stays atomic.
@@ -1066,23 +1114,7 @@ app.post('/api/register', rateLimit('register', 5), asyncHandler(async (req, res
   // distinguish "not in allowlist" from "wrong code" and learn roster
   // membership.
   const badCode = { error: '验证码无效或已过期' };
-  if (typeof code !== 'string' || !/^\d{6}$/.test(code)) {
-    return res.status(400).json(badCode);
-  }
-
-  const codeRow = Q.findEmailCode.get(email);
-  const now = Date.now();
-  if (!codeRow || codeRow.expires_at < now) {
-    return res.status(400).json(badCode);
-  }
-  if (codeRow.attempts >= EMAIL_CODE_MAX_ATTEMPTS) {
-    Q.deleteEmailCode.run(email);
-    return res.status(400).json(badCode);
-  }
-  if (codeRow.code_hash !== hashToken(code)) {
-    Q.bumpEmailCodeAttempts.run(email);
-    return res.status(400).json(badCode);
-  }
+  if (!consumeEmailCode(email, code)) return res.status(400).json(badCode);
   // Re-check allowlist in case the roster changed between send and register.
   if (!isAllowedEmail(email)) return res.status(400).json(badCode);
 
@@ -1112,6 +1144,12 @@ app.post('/api/login', rateLimit('login', 10), asyncHandler(async (req, res) => 
   const row = Q.findUserByName.get(email);
   const ok = await bcrypt.compare(password, row ? row.password_hash : DUMMY_BCRYPT_HASH);
   if (!row || !ok) return res.status(401).json({ error: '邮箱或密码错误' });
+  // Failure collapses into the same generic auth error so probing
+  // this endpoint can't tell "wrong password" from "no longer
+  // allowlisted" and learn roster membership.
+  if (!userHasAllowlistedEmail(row.id)) {
+    return res.status(401).json({ error: '邮箱或密码错误' });
+  }
   // Admins get their public display_name (Admin01…); for regular users
   // the handle is only ever the user's own email in their account view —
   // never written alongside content.
@@ -1153,6 +1191,87 @@ app.post('/api/change-password', requireSession, rateLimit('change-password', 5)
   if (!ok) return res.status(401).json({ error: '当前密码错误' });
   const hash = await bcrypt.hash(new_password, 12);
   Q.updateUserPassword.run(hash, row.id);
+  res.clearCookie('session', SESSION_COOKIE_BASE_OPTS);
+  res.json({ ok: true });
+}));
+
+// Stays opaque if the new address is already taken by another account
+// (silently drops in processChangeEmailSendCode), so this endpoint
+// can't be used as a registration probe.
+app.post('/api/change-email/send-code', requireSession, rateLimit('change-email-send-code', 5), (req, res) => {
+  const { email, error } = parseEmail(req.body && req.body.email);
+  if (error) return res.status(400).json({ error });
+  setImmediate(() => processChangeEmailSendCode(req.user.uid, email));
+  res.json({ ok: true });
+});
+
+async function processChangeEmailSendCode(uid, email) {
+  try {
+    const cur = Q.getUserEmail.get(uid);
+    if (!cur || cur.username === email) return;
+    const code = String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
+    if (!claimSendCodeSlotTx(email, hashToken(code), Date.now())) return;
+    try {
+      await sendVerificationEmail(email, code);
+    } catch (e) {
+      console.error('[change-email send-code] send failed:', e.message);
+      Q.deleteEmailCode.run(email);
+    }
+  } catch (e) {
+    console.error('[change-email send-code] background error:', e.message);
+  }
+}
+
+// Bumping pw_version inside Q.updateUserEmail invalidates every
+// existing session — the user has to re-log in via the new address,
+// which proves the mailbox is actually theirs.
+const swapEmailTx = db.transaction((uid, oldEmail, newEmail, now) => {
+  if (Q.usernameExists.get(newEmail)) return false;
+  // If the user is rotating BACK to a previous address, drop that
+  // address from history so it doesn't sit there as a duplicate of
+  // the new current email.
+  Q.deleteUserEmailHistoryFor.run(uid, newEmail);
+  Q.insertUserEmailHistory.run(uid, oldEmail, now);
+  Q.updateUserEmail.run(newEmail, uid);
+  Q.deleteEmailCode.run(newEmail);
+  return true;
+});
+
+app.post('/api/change-email', requireSession, rateLimit('change-email', 5), asyncHandler(async (req, res) => {
+  const { email: newEmail, error } = parseEmail(req.body && req.body.email);
+  if (error) return res.status(400).json({ error });
+  const { password, code } = req.body || {};
+  if (typeof password !== 'string' || !password) {
+    return res.status(400).json({ error: '请输入当前密码' });
+  }
+
+  const cur = Q.getUserEmail.get(req.user.uid);
+  if (!cur) return res.status(400).json({ error: '用户不存在' });
+  if (cur.username === newEmail) {
+    return res.status(400).json({ error: '新邮箱与当前邮箱相同' });
+  }
+
+  // Validate the cheap things first — bcrypt costs ~100ms; doing it
+  // before the code check would let a session-holding attacker burn
+  // server CPU on every wrong-code probe.
+  const badCode = { error: '验证码无效或已过期' };
+  if (!consumeEmailCode(newEmail, code)) return res.status(400).json(badCode);
+
+  const userRow = Q.findUserById.get(req.user.uid);
+  const ok = await bcrypt.compare(password, userRow ? userRow.password_hash : DUMMY_BCRYPT_HASH);
+  if (!userRow || !ok) return res.status(401).json({ error: '当前密码错误' });
+
+  let swapped;
+  try {
+    swapped = swapEmailTx(req.user.uid, cur.username, newEmail, Date.now());
+  } catch (e) {
+    if (e.code === 'SQLITE_CONSTRAINT_UNIQUE') {
+      return res.status(400).json(badCode);
+    }
+    throw e;
+  }
+  if (!swapped) return res.status(400).json(badCode);
+
   res.clearCookie('session', SESSION_COOKIE_BASE_OPTS);
   res.json({ ok: true });
 }));

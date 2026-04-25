@@ -46,6 +46,17 @@ with no stored mapping to an account.
      a password.
    - Logging in gives you a long-lived session cookie, used only to
      prove you're a valid member.
+   - **Change email**: under the user menu in the top-right, send a
+     6-digit code to a new address, enter it together with your current
+     password, and the new address replaces the old one. The old
+     address is recorded in a per-account "former addresses" list. From
+     then on you can only log in with the *current* email, but the
+     allowlist gate at login time passes if the current address **or any
+     former address** is still on the allowlist — so a member who
+     rotates to a new mailbox can keep access while still being
+     anchored to a previously verified identity.
+   - Changing the email invalidates every active session, so the new
+     address must log in once to prove the mailbox is yours.
 2. **Claim a write token**
    - Click "get / rotate token" in the sidebar to receive a random 32-byte
      token. The server stores only `sha256(token)` + expiry, plus a
@@ -142,6 +153,7 @@ with no stored mapping to an account.
 | Table           | User-linked?                    | Contents                                    |
 |-----------------|---------------------------------|---------------------------------------------|
 | `users`         | yes                             | email, bcrypt hash, daily token counter, password version |
+| `user_email_history` | yes (account-scoped)       | former login emails (used to extend the allowlist gate) |
 | `post_tokens`   | no                              | `sha256(token)`, `expires_at`               |
 | `posts`         | members: no / admins: yes       | `pseudonym`, title, body, channel, ts, temporary `token_hash` |
 | `comments`      | members: no / admins: yes       | `pseudonym`, body, `post_id`, `parent_id`, temporary `token_hash` |
@@ -226,6 +238,12 @@ sqlite3 data.db "UPDATE users SET is_admin = 1 WHERE username = 'you';"
 List allowed email addresses, one per line, in `dept-allowlist.txt`
 (`#` starts a comment). Missing file = registration fully disabled.
 The server `stat`s it every 2 s, so edits take effect without a restart.
+
+The same file gates *login*: an account is admitted if its current
+email **or any former email** it once used is currently on the
+allowlist. Removing one address from the file leaves former addresses
+on the same account valid; to fully evict an account, every address
+it has ever used has to come off.
 
 ## Deploying to fly.io
 
