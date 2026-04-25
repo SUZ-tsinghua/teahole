@@ -6,8 +6,9 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
+    "allowlist:import": "node scripts/import-allowlist.js",
     "typecheck": "tsc --noEmit",
-    "syntax-check": "node -c server.js && node -c db.js && node -c public/app.js && node -c public/theme-init.js",
+    "syntax-check": "node -c server.js && node -c db.js && node -c public/app.js && node -c public/theme-init.js && node -c scripts/import-allowlist.js",
     "check": "npm run syntax-check && npm run typecheck",
     "prepare": "git config --local core.hooksPath .githooks || true"
   },

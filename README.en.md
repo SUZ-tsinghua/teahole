@@ -225,6 +225,9 @@ sqlite3 data.db "UPDATE users SET is_admin = 1 WHERE username = 'you';"
 List allowed email addresses, one per line, in `dept-allowlist.txt`
 (`#` starts a comment). Missing file = registration fully disabled.
 The server `stat`s it every 2 s, so edits take effect without a restart.
+If you have a CSV / TXT / HTML roster export, run
+`npm run allowlist:import -- roster.csv` to extract addresses; add
+`--domain mails.tsinghua.edu.cn` to keep only a specific domain.
 
 ## Deploying to fly.io
 
