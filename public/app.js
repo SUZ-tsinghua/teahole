@@ -506,8 +506,25 @@ function openHelpDialog() {
   $('#help-dialog').hidden = false;
   try { localStorage.setItem(HELP_SEEN_KEY, '1'); } catch {}
 }
-function closeHelpDialog() { $('#help-dialog').hidden = true; }
+function closeHelpDialog() {
+  $('#help-dialog').hidden = true;
+  // First-time users land on the help dialog before they've ever held a
+  // token; chain straight into the token dialog so the very next click
+  // can issue one.
+  maybePromptForToken();
+}
 $('#help-btn').addEventListener('click', openHelpDialog);
+
+// Nudge logged-in non-admins who haven't claimed a token yet — without
+// one, posting/commenting/reacting all silently fail and the action
+// looks broken. The dialog is harmless to dismiss.
+function maybePromptForToken() {
+  if (isAdmin) return;
+  if (getToken()) return;
+  if (!$('#help-dialog').hidden) return;
+  if (!$('#token-dialog').hidden) return;
+  openDialog();
+}
 
 function openChannelDialog() {
   $('#channel-form').reset();
@@ -783,6 +800,7 @@ async function refreshMe() {
     try {
       if (!localStorage.getItem(HELP_SEEN_KEY)) openHelpDialog();
     } catch {}
+    maybePromptForToken();
   } catch {
     currentUsername = null;
     isAdmin = false;

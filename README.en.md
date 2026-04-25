@@ -59,7 +59,8 @@ with no stored mapping to an account.
      address must log in once to prove the mailbox is yours.
 2. **Claim a write token**
    - Click "get / rotate token" in the sidebar to receive a random 32-byte
-     token. The server stores only `sha256(token)` + expiry, plus a
+     token. While you don't have one, the dialog auto-opens after login as
+     a reminder. The server stores only `sha256(token)` + expiry, plus a
      per-day **counter** on your user row — never the plaintext, never a
      mapping to your account.
    - The plaintext is returned to you once. The client puts it in
