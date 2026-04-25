@@ -427,6 +427,7 @@ h1.hero-title .accent::after {
   border-top: 0.5px dashed var(--rule);
   font-family: var(--mono); font-size: 11px; color: var(--ink-3);
 }
+.feat .sample .ok { color: var(--jade); }
 
 /* ── Schema table ──────────────────────────────────────── */
 .schema { padding: 80px 0; border-bottom: 0.5px solid var(--rule); }
@@ -598,7 +599,7 @@ footer.bottom a:hover { color: var(--seal); }
             你知道屋子里的人多半同意你，于是你说了……
           </p>
           <div class="ev-reactions">
-            <span>♡ 12</span>
+            <span>👍 12</span>
             <span>↺ 5 评论</span>
           </div>
         </div>
@@ -720,20 +721,20 @@ footer.bottom a:hover { color: var(--seal); }
         </div>
         <div class="feat">
           <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
-          <h4>全文检索 · 三字以上即可</h4>
-          <p>FTS5 + trigram tokenizer，CJK 也能搜。<span class="pseudo">#123</span> 直接跳帖。搜索词不进日志。</p>
-          <div class="sample">→ "沉默的螺旋"<span style="color:var(--jade);"> · 命中 4 篇</span></div>
+          <h4>全文检索 · 任意长度</h4>
+          <p>FTS5 + trigram tokenizer，CJK 也能搜；不足三字时自动退回子串扫描。<span class="pseudo">#123</span> 直接跳帖。搜索词不进日志。</p>
+          <div class="sample">→ "沉默的螺旋"<span class="ok"> · 命中 4 篇</span></div>
         </div>
         <div class="feat">
           <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 2 L15 8 L22 9 L17 14 L18 21 L12 18 L6 21 L7 14 L2 9 L9 8 Z"/></svg>
           <h4>反应 · 一令一票</h4>
-          <p>👍❤️😂😮😢🎉 六种反应，帖子和评论均可。同一目标、同一令牌、同一种类，只算一次。令牌过期，计数留下，关联消失。</p>
-          <div class="sample">♡ 12   👍 8   🎉 3</div>
+          <p>👍👎 两种反应，帖子和评论均可。同一目标、同一令牌、同一种类，只算一次。令牌过期，计数留下，关联消失。</p>
+          <div class="sample">👍 12   👎 3</div>
         </div>
         <div class="feat">
           <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 4 L5 20 L12 16 L19 20 L19 4 Z"/></svg>
           <h4>收藏 · 频道</h4>
-          <p>★ 收藏绑账号——换令牌也不会丢。📌 置顶频道、🔕 静音不关心的；新帖给计数，不显内容。</p>
+          <p>★ 收藏绑账号——换令牌也不会丢。📌 置顶频道、🔕 把不关心的折叠起来，连未读提示也一并安静下来。</p>
           <div class="sample">★ 12 篇 · 3 个频道置顶</div>
         </div>
         <div class="feat">
@@ -744,9 +745,15 @@ footer.bottom a:hover { color: var(--seal); }
         </div>
         <div class="feat">
           <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="6.18" cy="17.82" r="2.18"/><path d="M4 4.44A15.56 15.56 0 0 1 19.56 20"/><path d="M4 10.1A9.9 9.9 0 0 1 13.9 20"/></svg>
-          <h4>RSS · 共享文档 · 公告</h4>
-          <p>登录用户可订阅 <span class="pseudo">/api/feed.xml</span>，最近 50 帖；wiki 式共享文档任意有效令牌可编辑。公告管理员署名。</p>
-          <div class="sample">/api/feed.xml<span style="color:var(--jade);"> · 已就绪</span></div>
+          <h4>RSS · 公告</h4>
+          <p>登录用户可订阅 <span class="pseudo">/api/feed.xml</span>，最近 50 帖。公告由管理员发布并署名。</p>
+          <div class="sample">/api/feed.xml<span class="ok"> · 已就绪</span></div>
+        </div>
+        <div class="feat" style="grid-column: 1 / -1;">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+          <h4>共享文档 <span class="pin">Wiki 式协作</span></h4>
+          <p>任意持有效令牌的成员均可编辑；创建者令牌存活期间或管理员可删。支持完整 Markdown / LaTeX / 图片，按频道归类，全文检索收录，可收藏至账号。文档本身持久留存——令牌过期后创建关联归零，内容不会随之消失。</p>
+          <div class="sample">/d/42<span class="ok"> · 任意有效令牌可编辑 · 可收藏</span></div>
         </div>
       </div>
     </section>
@@ -767,14 +774,20 @@ footer.bottom a:hover { color: var(--seal); }
           </tr>
         </thead>
         <tbody>
-          <tr><td class="tbl">users</td><td><span class="pill ok">是</span></td><td>邮箱、bcrypt 哈希、当日令牌计数</td></tr>
+          <tr><td class="tbl">users</td><td><span class="pill ok">是</span></td><td>邮箱哈希、bcrypt 密码哈希、当日令牌计数</td></tr>
           <tr><td class="tbl">post_tokens</td><td><span class="pill no">否</span></td><td>sha256(token)、过期时间</td></tr>
           <tr><td class="tbl">posts</td><td><span class="pill dual">普通匿名 / 管理员署名</span></td><td>pseudonym、标题、正文、频道、时间</td></tr>
-          <tr><td class="tbl">comments</td><td><span class="pill dual">普通匿名 / 管理员署名</span></td><td>pseudonym、正文、所属帖、父评论</td></tr>
+          <tr><td class="tbl">comments</td><td><span class="pill dual">普通匿名 / 管理员署名</span></td><td>pseudonym、正文、所属帖、父评论 ID</td></tr>
           <tr><td class="tbl">reactions</td><td><span class="pill no">否（FK 级联）</span></td><td>帖子、令牌哈希、反应种类</td></tr>
-          <tr><td class="tbl">mentions</td><td><span class="pill no">否（指向 pseudonym）</span></td><td>目标、来源帖/评论、时间</td></tr>
+          <tr><td class="tbl">comment_reactions</td><td><span class="pill no">否（FK 级联）</span></td><td>评论、令牌哈希、反应种类</td></tr>
+          <tr><td class="tbl">polls / poll_options</td><td><span class="pill no">否</span></td><td>所属帖、题目；选项文本、累计票数</td></tr>
+          <tr><td class="tbl">poll_votes</td><td><span class="pill no">否（票数留下，令牌删后无主）</span></td><td>投票 ID、令牌哈希、所选选项</td></tr>
+          <tr><td class="tbl">mentions</td><td><span class="pill no">否（指向 pseudonym）</span></td><td>目标 pseudonym、来源帖/评论、时间</td></tr>
+          <tr><td class="tbl">docs</td><td><span class="pill dual">任意令牌可编辑 / 创建者或管理员可删</span></td><td>标题、正文、创建令牌哈希、频道</td></tr>
+          <tr><td class="tbl">bulletins</td><td><span class="pill ok">是（管理员署名）</span></td><td>标题、正文、发布者用户名、时间</td></tr>
           <tr><td class="tbl">saved_posts</td><td><span class="pill ok">是</span></td><td>账号 × 帖子（书签）</td></tr>
-          <tr><td class="tbl">channel_prefs</td><td><span class="pill ok">是</span></td><td>读取游标、置顶 / 静音</td></tr>
+          <tr><td class="tbl">saved_docs</td><td><span class="pill ok">是</span></td><td>账号 × 共享文档（书签）</td></tr>
+          <tr><td class="tbl">user_channel_prefs</td><td><span class="pill ok">是</span></td><td>读取游标、置顶 / 静音偏好</td></tr>
         </tbody>
       </table>
     </section>
