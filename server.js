@@ -331,6 +331,7 @@ const Q = {
   insertReaction:  db.prepare('INSERT INTO reactions (post_id, token_hash, kind, created_at) VALUES (?, ?, ?, ?)'),
   deleteReaction:  db.prepare('DELETE FROM reactions WHERE post_id = ? AND token_hash = ? AND kind = ?'),
   countReactions:  db.prepare('SELECT kind, COUNT(*) AS n FROM reactions WHERE post_id = ? GROUP BY kind'),
+  countCommentsForPost: db.prepare('SELECT COUNT(*) AS n FROM comments WHERE post_id = ?'),
   insertPoll:      db.prepare('INSERT INTO polls (post_id, question, created_at) VALUES (?, ?, ?)'),
   insertPollOption: db.prepare('INSERT INTO poll_options (poll_id, position, label) VALUES (?, ?, ?)'),
   getPollByPost:   db.prepare('SELECT id, question FROM polls WHERE post_id = ?'),
@@ -550,7 +551,7 @@ const Q = {
 };
 
 // SECTION: derivations
-const REACTION_KINDS = ['👍', '❤️', '😂', '😮', '😢', '🎉'];
+const REACTION_KINDS = ['👍', '👎'];
 const REACTION_KIND_SET = new Set(REACTION_KINDS);
 const PSEUDONYM_RE = /^[a-f0-9]{8}$/;
 const MENTION_IN_CONTENT_RE = /@([A-Za-z0-9_]{3,32})/g;
@@ -595,6 +596,35 @@ function mapPostPreview(r) {
     edited_at: r.edited_at,
     channel_id: r.channel_id,
   };
+}
+
+// Annotates a list of post-preview rows with `reactions` (kind→count) and
+// `comment_count`. Uses two batch queries instead of 2×N per-post queries.
+// Dynamic IN-list requires inline db.prepare rather than a Q entry.
+function annotatePostStats(previews) {
+  if (!previews.length) return previews;
+  const ids = previews.map((p) => p.id);
+  const ph = ids.map(() => '?').join(',');
+  const reactionRows = db.prepare(
+    `SELECT post_id, kind, COUNT(*) AS n FROM reactions WHERE post_id IN (${ph}) GROUP BY post_id, kind`
+  ).all(...ids);
+  const commentRows = db.prepare(
+    `SELECT post_id, COUNT(*) AS n FROM comments WHERE post_id IN (${ph}) GROUP BY post_id`
+  ).all(...ids);
+  const reactionMap = {};
+  for (const r of reactionRows) {
+    if (!reactionMap[r.post_id]) reactionMap[r.post_id] = {};
+    if (REACTION_KIND_SET.has(r.kind)) reactionMap[r.post_id][r.kind] = r.n;
+  }
+  const commentMap = {};
+  for (const r of commentRows) commentMap[r.post_id] = r.n;
+  for (const p of previews) {
+    const out = Object.fromEntries(REACTION_KINDS.map((k) => [k, 0]));
+    Object.assign(out, reactionMap[p.id] || {});
+    p.reactions = out;
+    p.comment_count = commentMap[p.id] || 0;
+  }
+  return previews;
 }
 
 const toggleReactionTx = db.transaction((postId, tokenHash, kind) => {
@@ -1057,7 +1087,7 @@ app.get('/api/posts', requireSession, (req, res) => {
   } else {
     rows = Q.listPosts.all();
   }
-  res.json(rows.map(mapPostPreview));
+  res.json(annotatePostStats(rows.map(mapPostPreview)));
 });
 
 app.post('/api/posts', requireSession, (req, res) => {
@@ -1313,7 +1343,7 @@ app.get('/api/uploads/:name', requireSession, (req, res) => {
 // SECTION: routes:saved
 app.get('/api/saved', requireSession, (req, res) => {
   const ids = Q.listSavedIds.all(req.user.uid).map((r) => r.post_id);
-  const posts = Q.listSavedPosts.all(req.user.uid).map(mapPostPreview);
+  const posts = annotatePostStats(Q.listSavedPosts.all(req.user.uid).map(mapPostPreview));
   res.json({ ids, posts });
 });
 
@@ -1680,11 +1710,11 @@ app.get('/api/search', requireSession, (req, res) => {
     `SELECT ${postPreviewSql()} FROM posts WHERE id IN (${placeholders})`
   ).all(...ids);
   const rowsById = new Map(rows.map((r) => [r.id, r]));
-  res.json(ordered.map((hit) => ({
+  res.json(annotatePostStats(ordered.map((hit) => ({
     ...mapPostPreview(rowsById.get(hit.id)),
     hit_in_post: !!hit.in_post,
     hit_in_comment: !!hit.in_comment,
-  })));
+  }))));
 });
 
 // @mention inbox for either the current token's pseudonym or, for admins,

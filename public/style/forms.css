@@ -1,89 +1,97 @@
 /* ============================================================
-   Forms
+   Forms — general input + button system
    ============================================================ */
-.inline-form { display: flex; flex-direction: column; gap: 10px; margin-top: 18px; }
+
+.inline-form { display: flex; flex-direction: column; gap: 10px; margin-top: 16px; }
 form#login-form { display: flex; flex-direction: column; gap: 10px; }
 
+/* General inputs (forum mode: not auth) */
 input, textarea {
-  background: var(--surface-solid);
-  color: var(--fg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 10px 12px;
+  background: var(--paper-warm);
+  color: var(--ink);
+  border: 0.5px solid var(--rule);
+  border-radius: var(--rad);
+  padding: 9px 12px;
   font: inherit;
   font-family: var(--sans);
   font-size: 14px;
-  transition: border-color 140ms ease, box-shadow 140ms ease, background 140ms ease;
+  transition: border-color 0.14s, box-shadow 0.14s;
   width: 100%;
-  letter-spacing: -0.003em;
+  outline: none;
+  box-shadow: none;
+  letter-spacing: 0;
 }
-:root[data-theme="dark"] input,
-:root[data-theme="dark"] textarea { background: var(--surface-2); }
-input::placeholder, textarea::placeholder { color: var(--placeholder); }
-input:hover, textarea:hover { border-color: var(--border-strong); }
+input::placeholder, textarea::placeholder { color: var(--ink-4); }
+input:hover, textarea:hover { border-color: rgba(26,24,21,0.28); }
 input:focus, textarea:focus {
   outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-soft);
+  border-color: var(--seal);
+  box-shadow: none;
 }
-textarea { min-height: 120px; resize: vertical; line-height: 1.55; }
+textarea { min-height: 120px; resize: vertical; line-height: 1.6; font-family: var(--serif); }
 .reader-card textarea { min-height: 160px; }
 
-/* Default primary button */
+/* Primary button */
 button {
-  background: var(--accent);
-  color: var(--on-accent);
-  border: 0;
-  border-radius: var(--radius);
+  background: var(--ink);
+  color: var(--paper);
+  border: 1px solid var(--ink);
+  border-radius: var(--rad);
   padding: 8px 16px;
   cursor: pointer;
   font: inherit;
   font-family: var(--sans);
-  font-weight: 600;
+  font-weight: 500;
   font-size: 13px;
-  letter-spacing: -0.01em;
-  transition: transform 120ms cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 120ms, background 120ms;
-  box-shadow: var(--btn-shadow), inset 0 1px 0 rgba(255, 255, 255, 0.18);
+  letter-spacing: 0.02em;
+  transition: background 0.14s, border-color 0.14s, color 0.14s;
+  box-shadow: none;
   text-transform: none;
 }
 button:hover {
-  background: var(--accent-strong);
-  box-shadow: 0 4px 14px rgba(0, 122, 255, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.18);
-  transform: translateY(-1px);
+  background: var(--jade-deep);
+  border-color: var(--jade-deep);
+  color: var(--paper);
+  transform: none;
+  box-shadow: none;
 }
-button:active { transform: translateY(0); }
-button:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-soft); }
+button:active { transform: none; }
+button:focus-visible { outline: 2px solid var(--seal); outline-offset: 2px; box-shadow: none; }
 
+/* Ghost / secondary */
 button.ghost {
-  background: var(--surface);
-  color: var(--fg);
-  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--ink);
+  border: 0.5px solid var(--rule);
   box-shadow: none;
 }
 button.ghost:hover {
-  background: var(--surface-hover);
-  transform: translateY(-1px);
-  box-shadow: var(--shadow-xs);
-  color: var(--fg);
+  background: var(--paper-2);
+  color: var(--ink);
+  border-color: var(--rule);
+  transform: none;
+  box-shadow: none;
 }
-button.ghost.small { padding: 6px 12px; font-size: 12px; }
-button.ghost.small.danger { color: var(--danger); border-color: var(--border); }
+button.small { padding: 6px 13px; font-size: 13px; }
+button.ghost.small { padding: 5px 11px; font-size: 12px; }
+button.ghost.small.danger { color: var(--danger); border-color: var(--rule); }
 button.ghost.small.danger:hover {
-  background: var(--danger-soft);
+  background: var(--seal-soft);
   color: var(--danger);
   border-color: transparent;
+  transform: none;
 }
 
 .form-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
 
-.row { display: flex; gap: 10px; }
+.row { display: flex; gap: 8px; }
 .row button { flex: 1; }
 
-.code-row { display: flex; gap: 10px; }
+.code-row { display: flex; gap: 8px; }
 .code-row input { flex: 1; min-width: 0; }
 .code-row button { flex: 0 0 auto; }
 
-.auth-info { font-size: 12.5px; min-height: 1em; margin-top: 4px; color: var(--accent); }
+.auth-info { font-size: 12.5px; min-height: 1em; margin-top: 4px; color: var(--jade); font-family: var(--sans); }
 
 .err {
   color: var(--danger);
@@ -91,9 +99,8 @@ button.ghost.small.danger:hover {
   min-height: 1em;
   margin-top: 4px;
   font-family: var(--sans);
-  letter-spacing: 0;
 }
 
-.muted { color: var(--muted); font-size: 13px; }
+.muted { color: var(--ink-3); font-size: 13px; font-family: var(--serif); }
 
-.compose-hint { margin-bottom: 18px; font-size: 13px; font-family: var(--sans); letter-spacing: 0; }
+.compose-hint { margin-bottom: 16px; font-family: var(--serif); font-size: 13px; font-style: italic; color: var(--ink-3); }

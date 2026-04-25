@@ -37,13 +37,15 @@ const THEME_STORE_KEY = 'teahole.theme';
 const MY_REACTIONS_KEY = 'teahole.myReactions';
 const MY_VOTES_KEY = 'teahole.myVotes';
 const MENTIONS_SEEN_KEY = 'teahole.mentionsSeen';
+const BULLETINS_SEEN_KEY = 'teahole.bulletinsSeen';
 const HELP_SEEN_KEY = 'teahole.helpSeen';
 const SIDEBAR_WIDTH_KEY = 'teahole.sidebarWidth';
 const SIDEBAR_MIN = 220;
 const SIDEBAR_MAX = 520;
 // Authoritative list lives on the server (REACTION_KIND_SET in server.js).
 // Kept in sync manually — if you change one, change the other.
-const REACTION_KINDS = ['👍', '❤️', '😂', '😮', '😢', '🎉'];
+const REACTION_KINDS = ['👍', '👎'];
+const REACTION_LABELS = { '👍': '点赞', '👎': '点踩' };
 const PSEUDONYM_RE = /^[a-f0-9]{8}$/;
 const MENTION_IN_TEXT_RE = /@([A-Za-z0-9_]{3,32})|#(\d{1,10})/g;
 const MAX_VISUAL_DEPTH = 4;
@@ -207,8 +209,27 @@ function applyIdHue(node, pseudonym) {
   node.dataset.pseudonym = pseudonym;
   node.style.setProperty('--id-hue', String(hueFromPseudonym(pseudonym)));
 }
+function metaTimeSuffix(createdAt, editedAt) {
+  const parts = [
+    el('span', { className: 'sep', textContent: '·' }),
+    el('span', { className: 'meta-ts', textContent: fmtDate(createdAt) }),
+  ];
+  if (editedAt) {
+    parts.push(
+      el('span', { className: 'sep', textContent: '·' }),
+      el('span', { className: 'meta-edited', textContent: '已编辑' }),
+    );
+  }
+  return parts;
+}
+function metaLineParts(pseudonym, createdAt, editedAt) {
+  return [
+    el('span', { className: 'meta-name', textContent: pseudonym }),
+    ...metaTimeSuffix(createdAt, editedAt),
+  ];
+}
 function metaLine(pseudonym, createdAt, editedAt) {
-  const node = el('div', { className: 'meta', textContent: fmtMeta(pseudonym, createdAt, editedAt) });
+  const node = el('div', { className: 'meta' }, metaLineParts(pseudonym, createdAt, editedAt));
   applyIdHue(node, pseudonym);
   return node;
 }
@@ -223,6 +244,7 @@ const readerNode = $('#reader');
 let currentView = null;
 let currentThread = null;
 let currentComments = [];
+let currentReactionCounts = null;
 let currentPostPseudonym = null;
 let currentPostCanDelete = false;
 let feedPosts = [];
@@ -270,6 +292,15 @@ function mentionInboxKey(t = getToken()) {
 
 function ownsAuthorKey(authorKey, t = getToken()) {
   return !!(authorKey && t && t.pseudonym === authorKey);
+}
+
+function pseudonymChip(pseudonym, authorKey) {
+  const mine = ownsAuthorKey(authorKey);
+  const chip = el('span', { className: 'meta-pseudo-chip' + (mine ? ' is-mine' : '') }, [
+    el('span', { className: 'meta-pseudo', textContent: pseudonym }),
+  ]);
+  if (mine) chip.appendChild(el('span', { className: 'meta-mine', textContent: '·我' }));
+  return chip;
 }
 
 function canDeleteAuthor(authorKey, t = getToken()) {
@@ -332,6 +363,7 @@ function closeReader() {
   currentBulletin = null;
   currentDoc = null;
   clearTimeout(docPreviewTimer);
+  closeBulletinViewDialog({ sync: false });
   markActivePost(null);
   markActiveBulletin(null);
   markActiveDoc(null);
@@ -367,6 +399,9 @@ function renderTokenChip() {
   const text = $('#token-chip-text');
   chip.classList.toggle('active', !!t);
   text.textContent = tokenIdentityLabel(t);
+  // Keep the feed header's "你是 [pseudo]" stat in sync when the
+  // token changes (issue / rotate / clear).
+  if (typeof renderFeedHeader === 'function') renderFeedHeader();
 }
 
 function renderTokenBox() {
@@ -452,6 +487,7 @@ document.addEventListener('click', (e) => {
   else if (kind === 'confirm-rotate') closeConfirmRotate();
   else if (kind === 'channel') closeChannelDialog();
   else if (kind === 'bulletin') closeBulletinDialog();
+  else if (kind === 'bulletin-view') closeBulletinViewDialog();
   else if (kind === 'followed') closeFollowedDialog();
   else if (kind === 'help') closeHelpDialog();
   else if (kind === 'reader') closeReader();
@@ -493,6 +529,79 @@ $('#channel-form').addEventListener('submit', async (e) => {
   }
 });
 
+function setUserMenuOpen(open) {
+  const root = $('#userbar');
+  if (!root) return;
+  const toggle = root.querySelector('.user-chip');
+  const menu = root.querySelector('.user-menu');
+  if (!toggle || !menu) return;
+  root.classList.toggle('is-open', open);
+  toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+  menu.hidden = !open;
+}
+
+function closeUserMenu() {
+  setUserMenuOpen(false);
+}
+
+function renderUserMenu(me) {
+  const box = $('#userbar');
+  if (!box) return;
+  box.classList.remove('is-open');
+  box.innerHTML = '';
+  if (!me) return;
+
+  const initial = ((me.username || '你').trim()[0] || '你').toUpperCase();
+  const toggle = el('button', {
+    type: 'button',
+    className: 'user-chip',
+    title: `账号设置 · @${me.username}`,
+  }, [
+    el('span', { className: 'avatar', textContent: initial }),
+    el('span', { className: 'me-id', textContent: `@${me.username}` }),
+    el('span', { className: 'user-chip-caret', textContent: '▾' }),
+  ]);
+  toggle.setAttribute('aria-haspopup', 'menu');
+  toggle.setAttribute('aria-expanded', 'false');
+
+  const menu = el('div', { className: 'user-menu', hidden: true }, [
+    el('div', { className: 'user-menu-head' }, [
+      el('div', { className: 'user-menu-title', textContent: '设置' }),
+      el('div', {
+        className: 'user-menu-account',
+        textContent: `@${me.username}${me.admin ? ' · 管理员' : ''}`,
+      }),
+    ]),
+    el('div', {
+      className: 'user-menu-note',
+      textContent: '这里后续可以加入修改密码、更换邮箱等账号设置。',
+    }),
+    el('button', {
+      type: 'button',
+      className: 'user-menu-item danger',
+      textContent: '退出登录',
+      onclick: logout,
+    }),
+  ]);
+  menu.setAttribute('role', 'menu');
+  toggle.addEventListener('click', (e) => {
+    e.stopPropagation();
+    setUserMenuOpen(!box.classList.contains('is-open'));
+  });
+  menu.addEventListener('click', (e) => e.stopPropagation());
+  box.append(toggle, menu);
+}
+
+document.addEventListener('click', (e) => {
+  const userbar = $('#userbar');
+  if (!userbar || !userbar.classList.contains('is-open')) return;
+  if (userbar.contains(e.target)) return;
+  closeUserMenu();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeUserMenu();
+});
+
 async function refreshMe() {
   try {
     const me = await api('GET', '/api/me');
@@ -508,14 +617,7 @@ async function refreshMe() {
     $('#new-channel-btn').hidden = !isAdmin;
     $('#auth-view').hidden = true;
     $('#forum-view').hidden = false;
-    $('#userbar').innerHTML = '';
-    $('#userbar').append(
-      el('span', {
-        className: 'user-pill',
-        textContent: `@${me.username}${me.admin ? ' · 管理员' : ''}`,
-      }),
-      el('button', { textContent: '退出登录', onclick: logout }),
-    );
+    renderUserMenu(me);
     renderTokenChip();
     $('#new-bulletin-btn').hidden = !isAdmin;
     await loadChannels();
@@ -549,6 +651,7 @@ async function refreshMe() {
     lastMentions = [];
     $('#auth-view').hidden = false;
     $('#forum-view').hidden = true;
+    $('#userbar').classList.remove('is-open');
     $('#userbar').innerHTML = '';
     $('#mention-dot').hidden = true;
     stopPollingMentions();
@@ -556,6 +659,7 @@ async function refreshMe() {
 }
 
 async function logout() {
+  closeUserMenu();
   await api('POST', '/api/logout');
   clearToken();
   stopPollingMentions();
@@ -589,6 +693,13 @@ function setAuthMode(mode) {
   $('#auth-err').textContent = '';
   $('#auth-info').textContent = '';
   stopSendCodeCooldown();
+  // Sync editorial auth page tabs/panes.
+  $('#auth-tab-login')?.classList.toggle('active', !register);
+  $('#auth-tab-register')?.classList.toggle('active', register);
+  const pl = $('#auth-pane-login');   if (pl) pl.hidden = register;
+  const pr = $('#auth-pane-register'); if (pr) pr.hidden = !register;
+  const note = $('#auth-allowlist-note'); if (note) note.hidden = register;
+  const fieldConfirm = $('#auth-field-password-confirm'); if (fieldConfirm) fieldConfirm.hidden = !register;
 }
 
 async function authSubmit() {
@@ -694,36 +805,105 @@ $('#confirm-rotate-yes').addEventListener('click', async () => {
 // SECTION: feed
 // --- Feed + filters ---
 
+function setRailNavActive(selector, active) {
+  const btn = $(selector);
+  if (!btn) return;
+  btn.classList.toggle('active', active);
+  btn.classList.toggle('is-active', active);
+  btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+}
+
+function renderRailNavState() {
+  const savedActive = filterState.kind === 'saved';
+  setRailNavActive('#rail-feed', !savedActive);
+  setRailNavActive('#saved-filter-btn', savedActive);
+}
+
 function renderFilterBar() {
   const bar = $('#filter-bar');
   bar.innerHTML = '';
-  const label = $('#feed-label');
-  const base = feedMode === 'docs' ? '共享文档' : '动态';
-  if (!filterState.kind) {
+  const isDocs = feedMode === 'docs';
+  if (!filterState.kind || filterState.kind === 'channel' || filterState.kind === 'saved') {
     bar.hidden = true;
-    label.textContent = base;
   } else {
     bar.hidden = false;
-    let text, sub;
-    if (filterState.kind === 'channel') {
-      const ch = channelById(filterState.value);
-      text = `频道：${ch ? ch.name : '—'}`;
-      sub = `${base} · 频道`;
-    } else if (filterState.kind === 'saved') {
-      text = '仅显示我收藏的';
-      sub = `${base} · 收藏`;
-    } else {
-      text = `搜索：${filterState.value}`;
-      sub = `${base} · 搜索`;
-    }
-    label.textContent = sub;
-    bar.append(
-      el('span', { className: 'filter-text', textContent: text }),
-      el('button', { className: 'link-btn', type: 'button', textContent: '清除', onclick: clearFilter }),
-    );
+    let text;
+    text = `搜索：${filterState.value}`;
+    bar.appendChild(el('span', { className: 'filter-text', textContent: text }));
   }
+  renderFeedHeader();
   renderChannelList();
+  renderRailNavState();
 }
+
+// Renders the feed pane's eyebrow (h1 + stat) and description line.
+// Called whenever the filter, feed mode, post count, or token changes.
+function renderFeedHeader() {
+  const labelEl = $('#feed-label');
+  const statEl  = $('#feed-stat');
+  const descEl  = $('#feed-desc');
+  if (!labelEl || !statEl || !descEl) return;
+
+  const isDocs = feedMode === 'docs';
+  const ch = filterState.kind === 'channel' ? channelById(filterState.value) : null;
+  const isSaved = filterState.kind === 'saved';
+  const isSearch = filterState.kind === 'search';
+
+  // Title
+  let title;
+  if (ch) title = '#' + ch.name;
+  else if (isSaved) title = isDocs ? '我收藏的文档' : '我的收藏';
+  else if (isSearch) title = isDocs ? '文档搜索' : '搜索结果';
+  else title = isDocs ? '共享文档' : '动态';
+  labelEl.textContent = title;
+
+  // Stat line: count + identity
+  const count = isDocs
+    ? (lastDocsCount != null ? lastDocsCount : '')
+    : feedPosts.length;
+  statEl.innerHTML = '';
+  if (count !== '') {
+    statEl.appendChild(document.createTextNode(`${count} 篇`));
+  }
+  if (!isDocs && !isSaved) {
+    const t = getToken();
+    statEl.appendChild(document.createTextNode(' · 默认匿名 · 你是 '));
+    if (t && t.pseudonym) {
+      const ps = el('code', { className: 'pseudo', textContent: tokenDisplayName(t) });
+      statEl.appendChild(ps);
+    } else {
+      statEl.appendChild(el('span', { className: 'pseudo', textContent: '未领取', style: 'opacity:0.6' }));
+    }
+  }
+
+  // Description
+  let desc;
+  if (ch) {
+    desc = ch.description
+      ? `${ch.description}${isDocs ? ' · 共享文档视图' : ''}`
+      : (isDocs ? `频道 ${ch.name} 下的共享文档。` : `频道 ${ch.name} 下的最新发言。`);
+  } else if (isSaved) {
+    desc = isDocs
+      ? '收藏的共享文档列表，绑定账号，换令牌也不会丢。'
+      : '收藏的帖子列表，绑定账号，换令牌也不会丢。';
+  } else if (isSearch) {
+    desc = isDocs
+      ? '在所有共享文档的标题和正文中搜索。'
+      : '在所有帖子和评论里搜索。命中评论时会显示「评论命中」标签。';
+  } else if (isDocs) {
+    desc = 'Wiki 式协作。任何持有效令牌的用户都可以编辑——历史里只显示当时的匿名身份。';
+  } else {
+    desc = '所有频道里最近的发言。点开一篇展开阅读。';
+  }
+  descEl.textContent = desc;
+  const crumbNameEl = document.getElementById('crumb-name');
+  const crumbDescEl = document.getElementById('crumb-desc');
+  if (crumbNameEl) crumbNameEl.textContent = title;
+  if (crumbDescEl) crumbDescEl.textContent = desc;
+}
+
+// Tracks the last loaded docs count so renderFeedHeader can show "X 篇".
+let lastDocsCount = null;
 
 async function clearFilter() {
   filterState = { kind: null, value: null };
@@ -840,9 +1020,14 @@ function makeChannelPillButton(ch, activeId, opts = {}) {
   if (pref.muted) btn.classList.add('is-muted');
   if (unread > 0 && !pref.muted) btn.classList.add('has-unread');
   btn.title = ch.description || ch.name;
+  // Leading marker: 📌 pinned · 🔕 muted · · normal
+  let marker = '·';
+  if (pref.pinned) marker = '📌';
+  else if (pref.muted) marker = '🔕';
   btn.append(
-    el('span', { className: 'channel-hash', textContent: pref.pinned ? '📌' : '§' }),
+    el('span', { className: 'channel-hash', textContent: marker }),
     el('span', { className: 'channel-name', textContent: ch.name }),
+    el('span', { className: 'channel-slug', textContent: ch.slug || '' }),
   );
   if (unread > 0 && !pref.muted) {
     btn.appendChild(el('span', {
@@ -895,17 +1080,33 @@ function makeChannelPillButton(ch, activeId, opts = {}) {
   return btn;
 }
 
+function makeAllChannelsButton(active) {
+  const btn = el('button', { type: 'button', className: 'channel-pill channel-pill-all' });
+  if (active) btn.classList.add('is-active');
+  btn.title = feedMode === 'docs' ? '查看所有频道的共享文档' : '查看所有频道的帖子';
+  btn.append(
+    el('span', { className: 'channel-hash', textContent: '◇' }),
+    el('span', { className: 'channel-name', textContent: '全部' }),
+    el('span', { className: 'channel-slug', textContent: 'all' }),
+  );
+  btn.addEventListener('click', () => {
+    if (filterState.kind) clearFilter();
+  });
+  return btn;
+}
+
 function renderChannelList() {
   const box = $('#channel-list');
   if (!box) return;
   box.innerHTML = '';
+  const activeId = filterState.kind === 'channel' ? filterState.value : null;
+  const q = channelSearchQ.trim().toLowerCase();
+  if (!q) box.appendChild(makeAllChannelsButton(activeId == null));
   if (!channels.length) {
     box.appendChild(el('div', { className: 'muted channel-empty', textContent: '暂无频道' }));
     return;
   }
-  const q = channelSearchQ.trim().toLowerCase();
   const matches = (ch) => !q || ch.name.toLowerCase().includes(q) || ch.slug.toLowerCase().includes(q);
-  const activeId = filterState.kind === 'channel' ? filterState.value : null;
   const opts = { adminCanDelete: isAdmin };
   const pinned = [], normal = [], muted = [];
   for (const ch of channels) {
@@ -1093,6 +1294,32 @@ async function loadBulletins() {
   renderBulletinList();
 }
 
+function bulletinSeenStamp(b) {
+  return b && b.id != null ? String(b.updated_at || b.created_at || '') : '';
+}
+
+function readBulletinsSeen() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(BULLETINS_SEEN_KEY) || '{}');
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function isBulletinSeen(b, seenMap = readBulletinsSeen()) {
+  return seenMap[String(b.id)] === bulletinSeenStamp(b);
+}
+
+function markBulletinSeen(row) {
+  if (!row || row.id == null) return;
+  try {
+    const seen = readBulletinsSeen();
+    seen[String(row.id)] = bulletinSeenStamp(row);
+    localStorage.setItem(BULLETINS_SEEN_KEY, JSON.stringify(seen));
+  } catch {}
+}
+
 function renderBulletinList() {
   const box = $('#bulletin-list');
   if (!box) return;
@@ -1101,58 +1328,84 @@ function renderBulletinList() {
     box.appendChild(el('div', { className: 'muted bulletin-empty', textContent: '暂无公告' }));
     return;
   }
+  const seenMap = readBulletinsSeen();
   for (const b of bulletins) {
-    const btn = el('button', { type: 'button', className: 'bulletin-pill' });
+    const seen = isBulletinSeen(b, seenMap);
+    const btn = el('button', {
+      type: 'button',
+      className: 'bulletin-card ' + (seen ? 'is-read' : 'is-unread'),
+    });
     btn.dataset.bulletinId = String(b.id);
     btn.title = b.title;
+    const ts = b.created_at ? fmtBulletinDate(b.created_at) : '';
     btn.append(
-      el('span', { className: 'bulletin-title-text', textContent: b.title }),
-      el('span', { className: 'bulletin-author', textContent: `@${b.author_username}` }),
+      el('div', { className: 'bulletin-card-title', textContent: b.title }),
+      el('div', { className: 'bulletin-card-meta', textContent:
+        ts ? `@${b.author_username} · ${ts}` : `@${b.author_username}` }),
     );
-    btn.addEventListener('click', () => openBulletin(b.id));
+    btn.addEventListener('click', () => openBulletin(b.id, { pushUrl: false }));
     if (currentBulletin === b.id) btn.classList.add('is-active');
     box.appendChild(btn);
   }
 }
 
+// Bulletin date in the sidebar: short MM/DD if same year, else YYYY/MM/DD.
+function fmtBulletinDate(ms) {
+  const d = new Date(ms);
+  const now = new Date();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  if (d.getFullYear() === now.getFullYear()) return `${mm}/${dd}`;
+  return `${d.getFullYear()}/${mm}/${dd}`;
+}
+
 function markActiveBulletin(id) {
   const wanted = id == null ? null : String(id);
-  for (const n of $$('.bulletin-pill')) {
+  for (const n of $$('.bulletin-card, .bulletin-pill')) {
     n.classList.toggle('is-active', n.dataset.bulletinId === wanted);
   }
 }
 
-async function openBulletin(id, { pushUrl = true } = {}) {
+async function openBulletin(id, { pushUrl = false } = {}) {
   currentBulletin = id;
-  currentThread = null;
-  markActivePost(null);
   markActiveBulletin(id);
   if (pushUrl) syncUrl({ kind: 'bulletin', id });
+  if (isMobileViewport()) closeSidebarDrawer();
   let row;
   try {
     row = await api('GET', `/api/bulletins/${id}`);
   } catch (err) {
-    $('#bulletin-title').textContent = `公告 #${id}`;
-    $('#bulletin-meta').textContent = '';
-    $('#bulletin-body').innerHTML = '';
-    $('#bulletin-body').appendChild(el('p', { className: 'muted', textContent: err.message || '未找到' }));
-    $('#bulletin-actions').hidden = true;
-    showReader(VIEW.BULLETIN);
+    $('#bulletin-modal-title').textContent = `公告 #${id}`;
+    $('#bulletin-modal-meta').textContent = '';
+    $('#bulletin-modal-body').innerHTML = '';
+    $('#bulletin-modal-body').appendChild(el('p', { className: 'muted', textContent: err.message || '未找到' }));
+    $('#bulletin-modal-actions').hidden = true;
+    $('#bulletin-view-dialog').hidden = false;
     return;
   }
-  $('#bulletin-title').textContent = row.title;
-  const meta = $('#bulletin-meta');
+  const existingIdx = bulletins.findIndex((b) => b.id === row.id);
+  if (existingIdx >= 0) bulletins[existingIdx] = row;
+  markBulletinSeen(row);
+  renderBulletinList();
+  $('#bulletin-modal-title').textContent = row.title;
+  const meta = $('#bulletin-modal-meta');
   meta.textContent = `@${row.author_username} · ${fmtDate(row.created_at)}${row.updated_at ? ' · 已编辑' : ''}`;
   applyIdHue(meta, row.author_username);
-  $('#bulletin-body').innerHTML = '';
-  $('#bulletin-body').appendChild(renderMarkdown(row.content));
+  $('#bulletin-modal-body').innerHTML = '';
+  $('#bulletin-modal-body').appendChild(renderMarkdown(row.content));
   renderBulletinActions(row);
-  showReader(VIEW.BULLETIN);
-  readerNode.scrollTo({ top: 0, behavior: 'instant' });
+  $('#bulletin-view-dialog').hidden = false;
+}
+
+function closeBulletinViewDialog({ sync = true } = {}) {
+  $('#bulletin-view-dialog').hidden = true;
+  currentBulletin = null;
+  markActiveBulletin(null);
+  if (sync && routeFromPath()?.kind === 'bulletin') syncUrl(null);
 }
 
 function renderBulletinActions(row) {
-  const box = $('#bulletin-actions');
+  const box = $('#bulletin-modal-actions');
   box.innerHTML = '';
   if (!isAdmin) { box.hidden = true; return; }
   box.hidden = false;
@@ -1165,7 +1418,7 @@ function renderBulletinActions(row) {
       await api('DELETE', `/api/bulletins/${row.id}`);
       bulletins = bulletins.filter((b) => b.id !== row.id);
       renderBulletinList();
-      closeReader();
+      closeBulletinViewDialog();
     } catch (err) { alert(err.message); }
   });
   box.append(edit, del);
@@ -1189,6 +1442,12 @@ function closeBulletinDialog() { $('#bulletin-dialog').hidden = true; }
 
 $('#new-bulletin-btn').addEventListener('click', () => openBulletinDialog(null));
 $('#saved-filter-btn').addEventListener('click', () => filterBySaved());
+$('#rail-feed').addEventListener('click', async (e) => {
+  e.preventDefault();
+  closeReader();
+  if (feedMode !== 'posts') setFeedMode('posts', { reload: false });
+  await clearFilter();
+});
 
 // SECTION: docs
 // --- Shared docs: wiki-style markdown pages tied to a channel ---
@@ -1275,8 +1534,12 @@ async function loadDocs() {
     }
   } catch (err) {
     box.appendChild(el('div', { className: 'feed-empty', textContent: err.message }));
+    lastDocsCount = 0;
+    renderFeedHeader();
     return;
   }
+  lastDocsCount = rows.length;
+  renderFeedHeader();
   if (!rows.length) {
     const hint = filterState.kind === 'saved'
       ? '还没有收藏任何共享文档。'
@@ -1513,28 +1776,28 @@ function renderDocActions(row) {
   const buttons = [];
   const t = getToken();
   if (isDocEditing) {
-    const save = el('button', { type: 'button', className: 'ghost small', textContent: row.id == null ? '发布' : '保存' });
+    const save = el('button', { type: 'button', className: 'small', textContent: row.id == null ? '发布' : '保存' });
     save.addEventListener('click', () => saveDoc());
     buttons.push(save);
     const cancel = el('button', { type: 'button', className: 'ghost small', textContent: '取消' });
     cancel.addEventListener('click', () => cancelDocEdit());
     buttons.push(cancel);
   } else {
-    if (row.id != null) {
-      const saved = savedDocIds.has(row.id);
-      const saveBtn = el('button', {
-        type: 'button',
-        className: 'ghost small' + (saved ? ' is-saved' : ''),
-        textContent: saved ? '★ 已收藏' : '☆ 收藏',
-      });
-      saveBtn.addEventListener('click', () => toggleSavedDoc(row.id));
-      buttons.push(saveBtn);
-    }
     // Anyone with a valid posting token can edit; admin always can.
     if (t || isAdmin) {
-      const edit = el('button', { type: 'button', className: 'ghost small', textContent: '编辑' });
+      const edit = el('button', { type: 'button', className: 'small doc-edit-btn', textContent: '✎ 编辑此文档' });
       edit.addEventListener('click', () => enterDocEdit());
       buttons.push(edit);
+    }
+    if (row.id != null) {
+      const saved = savedDocIds.has(row.id);
+      const followBtn = el('button', {
+        type: 'button',
+        className: 'ghost small' + (saved ? ' is-saved' : ''),
+        textContent: saved ? '已关注' : '+ 关注',
+      });
+      followBtn.addEventListener('click', () => toggleSavedDoc(row.id));
+      buttons.push(followBtn);
     }
     // Delete gate: creator (while token is live) OR admin. The server
     // checks for real — we only show the button when it would succeed.
@@ -1756,7 +2019,7 @@ $('#bulletin-form').addEventListener('submit', async (e) => {
     else bulletins.unshift(row);
     renderBulletinList();
     closeBulletinDialog();
-    await openBulletin(row.id, { pushUrl: true });
+    await openBulletin(row.id, { pushUrl: false });
   } catch (err) {
     $('#bulletin-err').textContent = err.message;
   }
@@ -1764,6 +2027,26 @@ $('#bulletin-form').addEventListener('submit', async (e) => {
 
 // SECTION: post-card
 function renderPostCard(p) {
+  const ch = channelById(p.channel_id);
+  const likeCount = p.reactions && typeof p.reactions['👍'] === 'number' ? p.reactions['👍'] : 0;
+  const cc = typeof p.comment_count === 'number' ? p.comment_count : 0;
+
+  // Top meta line: [#channel] · pseudo · ts (matches design's .post-meta)
+  const metaChildren = [];
+  if (ch) {
+    const chTag = el('button', {
+      type: 'button', className: 'ch-tag', textContent: '#' + ch.name, title: ch.description || ch.name,
+    });
+    chTag.addEventListener('click', (e) => { e.stopPropagation(); filterByChannel(ch.id); });
+    metaChildren.push(chTag);
+    metaChildren.push(el('span', { className: 'sep', textContent: '·' }));
+  }
+  metaChildren.push(pseudonymChip(p.pseudonym, p.author_key));
+  metaChildren.push(...metaTimeSuffix(p.created_at, p.edited_at));
+  const metaRow = el('div', { className: 'post-meta' }, metaChildren);
+  applyIdHue(metaRow, p.pseudonym);
+
+  // Title row: id-badge + title (kept to preserve markActivePost & search hit logic)
   const titleChildren = [
     el('span', { className: 'id-badge', textContent: `#${p.id}` }),
     el('span', { className: 'post-title', textContent: p.title }),
@@ -1772,21 +2055,28 @@ function renderPostCard(p) {
     titleChildren.push(el('span', { className: 'hit-badge', title: '匹配在评论里', textContent: '评论命中' }));
   }
   const titleRow = el('div', { className: 'post-title-row' }, titleChildren);
+
+  // Excerpt
   const preview = p.truncated ? p.content + '…' : p.content;
-  const children = [titleRow];
-  const ch = channelById(p.channel_id);
-  if (ch) {
-    const badge = el('button', {
-      type: 'button', className: 'channel-badge small', textContent: ch.name, title: ch.description || ch.name,
-    });
-    badge.addEventListener('click', (e) => { e.stopPropagation(); filterByChannel(ch.id); });
-    children.push(badge);
-  }
-  children.push(
-    el('div', { className: 'post-preview', textContent: preview }),
-    metaLine(p.pseudonym, p.created_at, p.edited_at),
-  );
-  const node = el('div', { className: 'post' }, children);
+  const excerpt = el('div', { className: 'post-preview', textContent: preview });
+
+  // Foot: reaction strip + comment count + grow + saved/following indicators.
+  // Feed cards keep the summary compact and stable: always show likes,
+  // comments, and the visible post id in the title row.
+  const foot = el('div', { className: 'post-foot' });
+  foot.appendChild(el('span', {
+    className: 'post-stat react-count' + (likeCount === 0 ? ' is-empty' : ''),
+    textContent: `👍 ${likeCount}`,
+  }));
+  foot.appendChild(el('span', {
+    className: 'post-stat comment-count' + (cc === 0 ? ' is-empty' : ''),
+    textContent: `↺ ${cc} 评论`,
+  }));
+  foot.appendChild(el('span', { className: 'grow' }));
+  if (savedIds.has(p.id)) foot.appendChild(el('span', { className: 'saved-tag', textContent: '★ 收藏' }));
+  if (followedIds.has(p.id)) foot.appendChild(el('span', { className: 'following-tag', textContent: '◉ 关注' }));
+
+  const node = el('div', { className: 'post' }, [metaRow, titleRow, excerpt, foot]);
   node.dataset.postId = p.id;
   node.addEventListener('click', () => openThread(p.id));
   return node;
@@ -1797,6 +2087,17 @@ function markActivePost(id) {
   for (const n of $$('.post')) {
     n.classList.toggle('active', n.dataset.postId === wanted);
   }
+}
+
+function syncFeedPostStats(postId, { reactions, commentCount } = {}) {
+  const p = feedPosts.find((x) => x.id === postId);
+  if (!p) return;
+  if (reactions) p.reactions = { ...(p.reactions || {}), ...reactions };
+  if (typeof commentCount === 'number') p.comment_count = commentCount;
+  const oldCard = $(`.post[data-post-id="${postId}"]`);
+  if (!oldCard) return;
+  oldCard.replaceWith(renderPostCard(p));
+  if (currentThread != null) markActivePost(currentThread);
 }
 
 // SECTION: search
@@ -1882,6 +2183,8 @@ $('#post-form').addEventListener('submit', async (e) => {
     const feed = $('#feed');
     const emptyMsg = feed.querySelector('.feed-empty');
     if (emptyMsg) emptyMsg.remove();
+    created.reactions = Object.fromEntries(REACTION_KINDS.map((k) => [k, 0]));
+    created.comment_count = 0;
     feedPosts.unshift(created);
     feed.prepend(renderPostCard(created));
     const ch = channelById(created.channel_id);
@@ -2123,6 +2426,55 @@ function renderThreadChannel(channelId) {
   box.appendChild(chip);
 }
 
+function renderThreadBack(ch) {
+  const back = $('#thread-back');
+  if (!back) return;
+  back.textContent = ch ? `← 返回 #${ch.name}` : '← 返回';
+}
+
+function normalizedReactionCounts(counts) {
+  return Object.fromEntries(REACTION_KINDS.map((k) => [k, Number(counts && counts[k]) || 0]));
+}
+
+function reactionTotal(counts) {
+  return Object.values(normalizedReactionCounts(counts)).reduce((sum, n) => sum + n, 0);
+}
+
+function renderThreadMeta(post, ch, deleted) {
+  const meta = $('#thread-meta');
+  meta.innerHTML = '';
+  if (deleted) {
+    delete meta.dataset.pseudonym;
+    meta.style.removeProperty('--id-hue');
+    meta.appendChild(el('span', { className: 'meta-ts', textContent: `已删除于 ${fmtDate(post.deleted_at)}` }));
+    return;
+  }
+  applyIdHue(meta, post.pseudonym);
+  if (ch) {
+    const chTag = el('button', {
+      type: 'button',
+      className: 'ch-tag',
+      textContent: '#' + ch.name,
+      title: ch.description || ch.name,
+    });
+    chTag.addEventListener('click', () => filterByChannel(ch.id));
+    meta.append(chTag, el('span', { className: 'sep', textContent: '·' }));
+  }
+  meta.append(pseudonymChip(post.pseudonym, post.author_key), ...metaTimeSuffix(post.created_at, post.edited_at));
+}
+
+function renderThreadStats(postId) {
+  const box = $('#thread-stats');
+  if (!box) return;
+  box.innerHTML = '';
+  if (postId == null) { box.hidden = true; return; }
+  box.hidden = false;
+  box.append(
+    el('span', { className: 'thread-stat-label', textContent: '帖号' }),
+    el('span', { className: 'id-badge id-badge--lg', textContent: `#${postId}` }),
+  );
+}
+
 function renderThreadActions() {
   const box = $('#thread-actions');
   box.innerHTML = '';
@@ -2194,24 +2546,17 @@ async function openThread(id, { pushUrl = true } = {}) {
   const { post, comments, reactions, poll } = data;
   const deleted = !!post.deleted_at;
   currentComments = comments.slice();
+  currentReactionCounts = normalizedReactionCounts(reactions);
+  syncFeedPostStats(id, { reactions, commentCount: comments.length });
   currentPostPseudonym = deleted ? null : post.pseudonym;
   currentPostCanDelete = !deleted && canDeleteAuthor(post.author_key);
+  const ch = deleted ? null : channelById(post.channel_id);
 
+  renderThreadBack(ch);
   $('#thread-title').innerHTML = '';
-  $('#thread-title').append(
-    el('span', { className: 'id-badge id-badge--lg', textContent: `#${post.id}` }),
-    el('span', { textContent: deleted ? '[已删除]' : post.title }),
-  );
-  const meta = $('#thread-meta');
-  meta.innerHTML = '';
-  if (deleted) {
-    delete meta.dataset.pseudonym;
-    meta.style.removeProperty('--id-hue');
-    meta.textContent = `已删除于 ${fmtDate(post.deleted_at)}`;
-  } else {
-    applyIdHue(meta, post.pseudonym);
-    meta.textContent = fmtMeta(post.pseudonym, post.created_at, post.edited_at);
-  }
+  $('#thread-title').textContent = deleted ? '[已删除]' : post.title;
+  renderThreadMeta(post, ch, deleted);
+  renderThreadStats(post.id);
   $('#thread-body').innerHTML = '';
   if (deleted) {
     $('#thread-body').appendChild(el('p', {
@@ -2221,15 +2566,19 @@ async function openThread(id, { pushUrl = true } = {}) {
   } else {
     $('#thread-body').appendChild(renderMarkdown(post.content));
   }
-  renderThreadChannel(deleted ? null : post.channel_id);
-  renderThreadActions();
+  renderThreadChannel(null);
   if (deleted) {
+    $('#thread-toolbar').hidden = true;
     $('#reactions').innerHTML = '';
     $('#reactions').hidden = true;
+    $('#thread-actions').innerHTML = '';
+    $('#thread-actions').hidden = true;
     renderPoll(null);
   } else {
+    $('#thread-toolbar').hidden = false;
     $('#reactions').hidden = false;
-    renderReactions(reactions || Object.fromEntries(REACTION_KINDS.map((k) => [k, 0])));
+    renderReactions(currentReactionCounts);
+    renderThreadActions();
     renderPoll(poll || null);
     refreshPollForCurrentThread().catch(() => {});
   }
@@ -2250,9 +2599,12 @@ async function openThread(id, { pushUrl = true } = {}) {
 
 function renderMissingThread(id, message) {
   currentComments = [];
+  currentReactionCounts = null;
   currentPostPseudonym = null;
   currentPostCanDelete = false;
+  renderThreadBack(null);
   renderPoll(null);
+  $('#thread-toolbar').hidden = true;
   $('#reactions').innerHTML = '';
   $('#reactions').hidden = false;
   $('#comment-form').hidden = false;
@@ -2261,11 +2613,11 @@ function renderMissingThread(id, message) {
   $('#thread-actions').innerHTML = '';
   $('#thread-actions').hidden = true;
   $('#thread-title').innerHTML = '';
-  $('#thread-title').append(
-    el('span', { className: 'id-badge id-badge--lg', textContent: `#${id}` }),
-    el('span', { textContent: '帖子不存在' }),
-  );
+  $('#thread-title').textContent = '帖子不存在';
+  renderThreadStats(id);
   $('#thread-meta').textContent = '';
+  delete $('#thread-meta').dataset.pseudonym;
+  $('#thread-meta').style.removeProperty('--id-hue');
   $('#thread-body').innerHTML = '';
   $('#thread-body').appendChild(el('p', { className: 'muted', textContent: message || '未找到该帖子。' }));
   $('#comments').innerHTML = '';
@@ -2280,15 +2632,16 @@ window.addEventListener('popstate', () => {
   const route = routeFromPath();
   if (!route) {
     currentThread = null;
-    currentBulletin = null;
+    closeBulletinViewDialog({ sync: false });
     currentDoc = null;
     markActivePost(null);
-    markActiveBulletin(null);
     markActiveDoc(null);
     showReader(VIEW.EMPTY);
   } else if (route.kind === 'post' && route.id !== currentThread) {
+    closeBulletinViewDialog({ sync: false });
     openThread(route.id, { pushUrl: false }).catch(() => {});
   } else if (route.kind === 'doc' && route.id !== currentDoc) {
+    closeBulletinViewDialog({ sync: false });
     openDoc(route.id, { pushUrl: false }).catch(() => {});
   } else if (route.kind === 'bulletin' && route.id !== currentBulletin) {
     openBulletin(route.id, { pushUrl: false }).catch(() => {});
@@ -2316,7 +2669,14 @@ function renderComment(c, depth) {
     delBtn.addEventListener('click', () => deleteComment(c));
     actions.append(delBtn);
   }
-  const node = el('div', { className: 'comment' }, [
+  // Avatar: 4 chars of pseudonym for anon, "管" for admin (non-hex pseudonym)
+  const isAdminComment = c.pseudonym && !PSEUDONYM_RE.test(c.pseudonym);
+  const avatar = el('div', {
+    className: 'av' + (isAdminComment ? ' admin' : ''),
+    textContent: isAdminComment ? '管' : (c.pseudonym || '').slice(0, 4),
+  });
+  const node = el('div', { className: 'comment' + (isAdminComment ? ' admin' : '') }, [
+    avatar,
     metaLine(c.pseudonym, c.created_at, c.edited_at),
     body,
     actions,
@@ -2394,7 +2754,9 @@ function startEditComment(commentNode, c) {
       // Re-render body.
       body.innerHTML = '';
       body.appendChild(renderMarkdown(updated.content));
-      commentNode.querySelector(':scope > .meta').textContent = fmtMeta(c.pseudonym, c.created_at, updated.edited_at);
+      const oldMeta = commentNode.querySelector(':scope > .meta');
+      const newMeta = metaLine(c.pseudonym, c.created_at, updated.edited_at);
+      if (oldMeta) commentNode.replaceChild(newMeta, oldMeta);
       form.remove();
       body.hidden = false;
       flashTarget(commentNode);
@@ -2412,9 +2774,12 @@ async function deleteComment(c) {
   if (!body) { openDialog(); return; }
   try {
     await api('DELETE', `/api/posts/${currentThread}/comments/${c.id}`, body);
-    currentComments = currentComments.filter((x) => x.id !== c.id);
+    const removedIds = commentCascadeIds(c.id);
+    currentComments = currentComments.filter((x) => !removedIds.has(x.id));
     const node = $(`.comment[data-comment-id="${c.id}"]`);
     if (node) node.remove();
+    syncFeedPostStats(currentThread, { commentCount: currentComments.length });
+    renderThreadStats(currentThread);
     const box = $('#comments');
     if (!currentComments.length) {
       box.innerHTML = '';
@@ -2423,6 +2788,25 @@ async function deleteComment(c) {
   } catch (err) {
     alert(err.message);
   }
+}
+
+function commentCascadeIds(commentId) {
+  const kids = new Map();
+  for (const c of currentComments) {
+    if (c.parent_id == null) continue;
+    if (!kids.has(c.parent_id)) kids.set(c.parent_id, []);
+    kids.get(c.parent_id).push(c.id);
+  }
+  const removed = new Set([commentId]);
+  const stack = [commentId];
+  while (stack.length) {
+    for (const childId of kids.get(stack.pop()) || []) {
+      if (removed.has(childId)) continue;
+      removed.add(childId);
+      stack.push(childId);
+    }
+  }
+  return removed;
 }
 
 async function submitComment({ parentId, content, errNode, onDone }) {
@@ -2439,6 +2823,8 @@ async function submitComment({ parentId, content, errNode, onDone }) {
     const empty = box.querySelector('.empty-comments');
     if (empty) empty.remove();
     insertCommentIntoTree(created);
+    syncFeedPostStats(currentThread, { commentCount: currentComments.length });
+    renderThreadStats(currentThread);
   } catch (err) {
     errNode.textContent = err.message;
   }
@@ -2511,8 +2897,13 @@ function renderReactions(counts) {
   const mine = new Set(t ? (myReactionsFor(t.pseudonym)[currentThread] || []) : []);
   for (const kind of REACTION_KINDS) {
     const count = counts[kind] || 0;
-    const pill = el('button', { type: 'button', className: 'reaction-pill' });
+    const pill = el('button', {
+      type: 'button',
+      className: 'reaction-pill',
+      title: REACTION_LABELS[kind] || kind,
+    });
     pill.appendChild(el('span', { className: 'reaction-emoji', textContent: kind }));
+    pill.appendChild(el('span', { className: 'reaction-label', textContent: REACTION_LABELS[kind] || kind }));
     pill.appendChild(el('span', {
       className: 'reaction-count' + (count === 0 ? ' is-zero' : ''),
       textContent: String(count),
@@ -2533,7 +2924,10 @@ async function toggleReaction(kind) {
     const r = await api('POST', `/api/posts/${postId}/reactions`, { token: t.token, kind });
     if (currentThread !== postId) return;
     setMyReaction(t.pseudonym, postId, kind, !wasMine);
-    renderReactions(r.reactions);
+    currentReactionCounts = normalizedReactionCounts(r.reactions);
+    renderReactions(currentReactionCounts);
+    renderThreadStats(postId);
+    syncFeedPostStats(postId, { reactions: currentReactionCounts });
   } catch (err) {
     if (/令牌/.test(err.message)) openDialog();
   }
@@ -3140,6 +3534,7 @@ document.addEventListener('keydown', (e) => {
   if (!$('#confirm-rotate-dialog').hidden) { closeConfirmRotate(); return; }
   if (!$('#channel-dialog').hidden) { closeChannelDialog(); return; }
   if (!$('#bulletin-dialog').hidden) { closeBulletinDialog(); return; }
+  if (!$('#bulletin-view-dialog').hidden) { closeBulletinViewDialog(); return; }
   if (!$('#followed-dialog').hidden) { closeFollowedDialog(); return; }
   if (!$('#help-dialog').hidden) { closeHelpDialog(); return; }
   if (!$('#token-dialog').hidden) { closeDialog(); return; }

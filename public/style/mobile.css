@@ -1,31 +1,43 @@
 /* ============================================================
-   Mobile
+   Mobile — responsive overrides
    ============================================================ */
 @media (max-width: 760px) {
   :root { --nav-h: 48px; }
-  .brand-sub { display: none; }
-  header { padding: 0 12px; }
-  .brand { font-size: 15px; }
-  .layout { grid-template-columns: 1fr; }
-  .sidebar-resizer { display: none; }
-  .sidebar-head { padding: 10px 12px 8px; gap: 8px; }
 
+  /* Hide rail; collapse 3-col grid to 1-col layout */
+  .forum {
+    grid-template-columns: 1fr;
+    grid-template-rows: var(--nav-h) 1fr;
+    grid-template-areas:
+      "header"
+      "reader";
+  }
+  .rail { display: none; }
+  .sidebar-resizer { display: none; }
   .sidebar-toggle { display: inline-flex; }
 
-  /* Sidebar becomes a slide-in drawer from the left. Reader (which
-     contains the feed) stays full-width as the landing surface. */
+  .fheader { padding: 0 12px; gap: 10px; }
+  .fheader .crumb .ch-desc { display: none; }
+  .search-pod { width: 180px; }
+  #userbar { margin-left: 0; }
+  #userbar .me-id { display: none; }
+  #userbar .user-chip { padding-right: 6px; }
+  #userbar .user-menu { min-width: min(220px, calc(100vw - 32px)); }
+  #rss-link { display: none; }
+
+  /* Sidebar: slide-in drawer from left */
   .sidebar {
     position: fixed;
     top: var(--nav-h);
     left: 0;
     bottom: 0;
-    width: min(86vw, 320px);
+    width: min(86vw, 300px);
     z-index: 35;
-    background: var(--bg-base);
-    border-right: 1px solid var(--border);
+    background: var(--paper-2);
+    border-right: 0.5px solid var(--rule);
     transform: translateX(-100%);
-    transition: transform 240ms cubic-bezier(0.3, 0, 0.3, 1);
-    box-shadow: 2px 0 18px rgba(0, 0, 0, 0.18);
+    transition: transform 220ms cubic-bezier(0.3, 0, 0.3, 1);
+    box-shadow: 2px 0 16px rgba(26,24,21,0.14);
     overflow-y: auto;
   }
   .sidebar.open { transform: translateX(0); }
@@ -33,74 +45,86 @@
   .sidebar-backdrop {
     position: fixed;
     inset: var(--nav-h) 0 0 0;
-    background: rgba(0, 0, 0, 0.4);
+    background: var(--backdrop);
     z-index: 34;
     opacity: 0;
-    transition: opacity 200ms ease;
+    transition: opacity 180ms ease;
   }
   .sidebar-backdrop.open { opacity: 1; }
 
-  /* Wide-tappable controls: 40px is the Apple HIG minimum target. */
+  /* Touch targets */
   .channel-pill,
   .bulletin-pill,
-  .foot-link,
   .icon-btn,
-  .reaction-pill {
-    min-height: 40px;
-  }
+  .reaction-pill { min-height: 40px; }
   .compose-btn { padding: 12px 14px; font-size: 15px; }
-
-  /* Pref toggles that sat hidden behind hover — always visible on touch. */
   .channel-pref-btn { opacity: 0.55; }
 
+  /* Prevent iOS auto-zoom on focus */
   textarea, input[type=text], input[type=search], input[type=password], input[name=username] {
-    font-size: 16px;  /* Keeps iOS from auto-zooming on focus. */
+    font-size: 16px;
   }
 
-  .reader {
-    position: fixed;
-    inset: var(--nav-h) 0 0 0;
-    background: var(--bg-base);
-    z-index: 10;
-  }
-
+  .reader { background: var(--paper); }
   .reader-card {
     margin: 8px;
     padding: 18px 16px 100px;
-    border-radius: var(--radius-lg);
+    border-radius: var(--rad-md);
   }
   .reader-card h2 { font-size: 20px; line-height: 1.3; }
+  #thread-title { font-size: 30px; line-height: 1.18; }
+  #thread-meta { margin-bottom: 12px; }
+  .thread-stats { font-size: 13px; margin-bottom: 10px; padding-bottom: 0; }
+  .thread-toolbar { gap: 6px; margin-bottom: 22px; padding-bottom: 18px; }
+  #thread-body.prose { font-size: 16px; line-height: 1.8; }
   .dialog-card {
-    padding: 18px;
-    border-radius: var(--radius-lg);
+    padding: 18px 20px;
+    border-radius: var(--rad-md);
     max-width: calc(100vw - 24px);
     max-height: calc(100vh - 40px);
     overflow-y: auto;
   }
 
   .channel-list, .bulletin-list { max-height: none; }
-  .md-img { max-height: 360px; }
+  .md-img { max-height: 320px; }
   .post-preview { -webkit-line-clamp: 3; }
   .form-actions button { flex: 1; min-height: 40px; }
+
+  .feed-pane #feed { padding: 0 14px 40px; }
+  .feed-pane-head { padding: 12px 14px 10px; }
+
+  /* Auth: single column */
+  .auth { grid-template-columns: 1fr; overflow: auto; }
+  .auth-left {
+    padding: 32px 22px;
+    border-right: none;
+    border-bottom: 1px solid var(--ink);
+  }
+  .auth-h1 { font-size: 36px; }
+  .auth-seal-deco { display: none; }
+  .auth-right { padding: 32px 22px; }
 }
 
 /* Phone portrait */
 @media (max-width: 420px) {
-  header { padding: 0 8px; }
+  .fheader { padding: 0 10px; }
+  .fheader .crumb .ch-name { font-size: 15px; }
+  .search-pod { width: 130px; }
   .reader-card { margin: 4px; padding: 14px 12px 100px; }
   .reader-card h2 { font-size: 18px; }
-  .id-badge { font-size: 10px; padding: 1px 6px; }
-  .meta { font-size: 11px; }
+  #thread-title { font-size: 24px; }
+  .id-badge { font-size: 9.5px; padding: 1px 5px; }
+  .meta { font-size: 10.5px; }
+  .auth-left { padding: 24px 16px; }
+  .auth-right { padding: 24px 16px; }
+  .auth-h1 { font-size: 30px; }
 }
 
-/* ============================================================
-   Reduced motion — honor OS preference
-   ============================================================ */
+/* ── Reduced motion ────────────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
-  body::before { animation: none; }
 }
