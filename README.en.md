@@ -7,8 +7,9 @@
 > English · [中文](README.md)
 
 > **Internal access only.** To keep this a closed circle for 茶园, only emails
-> on the allowlist can register. If you'd like to try it out, reach out to me
-> by email or WeChat.
+> on the allowlist can register. The allowlist is your OA email. If your
+> registration email matches your OA email but you still are not receiving
+> verification codes, contact me at suz22@mails.tsinghua.edu.cn.
 
 A login-gated internal community where **regular members stay unlinkable by
 default, while admins can speak publicly under their usernames**.

@@ -7,7 +7,7 @@
 > [English](README.en.md) · 中文
 
 > **仅限内部访问。** 为了仅让茶园内部访问，只有 allowlist 里的邮箱才能注册。
-> 想体验的朋友，请发邮件或微信找我
+> Allowlist 中的邮箱是大家oa中的邮箱。若注册邮箱与oa邮箱一致，但仍然出现收不到验证码的情况，请联系我 suz22@mails.tsinghua.edu.cn
 
 一个「登录可见、默认匿名」的内部社区。在线访问：<https://teahole.fly.dev>
 
