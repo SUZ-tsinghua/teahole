@@ -1,0 +1,872 @@
+<!doctype html>
+<!--
+  茶园树洞 · 公开介绍页 (GitHub Pages)
+  ---
+  把 APP_URL 改成你的 teahole 实例地址（如 https://teahole.example.com），
+  然后把这个 docs/ 目录推到 GitHub，在仓库设置里把 Pages 源设为
+  "main branch / docs folder"即可。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>茶园树洞 · teahole</title>
+<meta name="description" content="一个不留身份的内部小社群。准入受控，发言默认匿名，服务器只保存令牌哈希。">
+<style>
+/* ── Design tokens ─────────────────────────────────────── */
+:root {
+  --paper:      #f4ede0;
+  --paper-2:    #ebe2d1;
+  --paper-warm: #faf6ec;
+  --ink:        #1a1815;
+  --ink-2:      #3d3631;
+  --ink-3:      #6a625a;
+  --ink-4:      #9c9286;
+  --rule:       rgba(26,24,21,0.16);
+  --rule-soft:  rgba(26,24,21,0.08);
+  --jade:       #4a6b4a;
+  --jade-deep:  #2f4a32;
+  --jade-soft:  rgba(74,107,74,0.10);
+  --seal:       #b04a3a;
+  --seal-soft:  rgba(176,74,58,0.10);
+  --gold:       #b8923a;
+  --gold-soft:  rgba(184,146,58,0.12);
+  --serif: "Noto Serif SC","Songti SC","STSong","Source Han Serif SC",Georgia,serif;
+  --sans:  "Noto Sans SC","PingFang SC",-apple-system,BlinkMacSystemFont,"Hiragino Sans GB","Microsoft YaHei",system-ui,sans-serif;
+  --mono:  "JetBrains Mono","SF Mono","Menlo",Consolas,monospace;
+  --rad-sm: 2px; --rad: 4px; --rad-md: 6px; --rad-lg: 10px;
+  --shadow-1: 0 1px 0 rgba(26,24,21,0.04), 0 1px 3px rgba(26,24,21,0.06);
+  --shadow-2: 0 2px 6px rgba(26,24,21,0.08), 0 1px 2px rgba(26,24,21,0.04);
+  --shadow-3: 0 12px 32px rgba(26,24,21,0.12), 0 2px 8px rgba(26,24,21,0.06);
+  color-scheme: light;
+}
+[data-theme="dark"] {
+  --paper:      #1c1a17;
+  --paper-2:    #16140f;
+  --paper-warm: #24211c;
+  --ink:        #f0e8d8;
+  --ink-2:      #cabfa9;
+  --ink-3:      #8d8678;
+  --ink-4:      #5e5950;
+  --rule:       rgba(240,232,216,0.14);
+  --rule-soft:  rgba(240,232,216,0.07);
+  --jade:       #7ea077;
+  --jade-deep:  #a8c89e;
+  --jade-soft:  rgba(126,160,119,0.14);
+  --seal:       #d97560;
+  --seal-soft:  rgba(217,117,96,0.16);
+  --gold:       #d4a64a;
+  --gold-soft:  rgba(212,166,74,0.14);
+  color-scheme: dark;
+}
+
+/* ── Reset & base ──────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; overflow-x: hidden; }
+body {
+  font-family: var(--sans);
+  background: var(--paper);
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: "palt" 1;
+  line-height: 1.55;
+}
+
+/* Reusable elements */
+.pseudo {
+  font-family: var(--mono);
+  font-size: 0.9em;
+  color: var(--ink-2);
+  background: var(--paper-2);
+  padding: 1px 6px;
+  border-radius: var(--rad-sm);
+  letter-spacing: 0.04em;
+  border: 0.5px solid var(--rule);
+}
+.btn {
+  font-family: var(--sans);
+  font-size: 14px;
+  font-weight: 500;
+  border: 1px solid var(--ink);
+  background: var(--ink);
+  color: var(--paper);
+  padding: 10px 18px;
+  border-radius: var(--rad);
+  cursor: pointer;
+  transition: background 0.14s, border-color 0.14s;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.btn:hover { background: var(--jade-deep); border-color: var(--jade-deep); }
+.btn.ghost { background: transparent; color: var(--ink); }
+.btn.ghost:hover { background: var(--ink); color: var(--paper); }
+.btn.seal { background: var(--seal); border-color: var(--seal); color: var(--paper); }
+.btn.seal:hover { background: #8a3a2d; border-color: #8a3a2d; }
+.btn.small { padding: 6px 12px; font-size: 12px; }
+
+.pill {
+  display: inline-block; padding: 2px 8px; font-size: 11px;
+  border-radius: 999px; font-family: var(--sans); font-weight: 500;
+}
+.pill.ok   { background: var(--jade-soft); color: var(--jade-deep); }
+.pill.no   { background: var(--seal-soft); color: var(--seal); }
+.pill.dual { background: var(--gold-soft); color: var(--gold); }
+
+/* ── Layout chrome ─────────────────────────────────────── */
+.page {
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: 56px 1fr 56px;
+  grid-template-rows: auto 1fr auto;
+  background: var(--paper);
+}
+.gutter {
+  background: var(--paper-2);
+  border-right: 0.5px solid var(--rule);
+  position: relative;
+  grid-column: 1;
+  grid-row: 1 / -1;
+}
+.gutter.right { border-right: none; border-left: 0.5px solid var(--rule); grid-column: 3; }
+.gutter-mark {
+  position: absolute;
+  top: 24px; left: 50%;
+  transform: translateX(-50%);
+  font-family: var(--serif);
+  color: var(--seal);
+  font-weight: 700;
+  font-size: 16px;
+  letter-spacing: 0.4em;
+  writing-mode: vertical-rl;
+}
+.gutter-mark.bottom {
+  top: auto; bottom: 24px; color: var(--ink-3);
+  font-size: 10px; letter-spacing: 0.6em;
+}
+
+/* ── Header ────────────────────────────────────────────── */
+header.top {
+  grid-column: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 22px 0 18px;
+  border-bottom: 0.5px solid var(--rule);
+}
+.brand { display: flex; align-items: baseline; gap: 12px; }
+.brand-cn {
+  font-family: var(--serif);
+  font-size: 22px; font-weight: 700;
+  letter-spacing: 0.08em; color: var(--ink);
+}
+.brand-en {
+  font-family: var(--serif);
+  font-style: italic; color: var(--ink-3);
+  font-size: 13px; letter-spacing: 0.04em;
+}
+nav.top-nav { display: flex; gap: 28px; align-items: center; }
+nav.top-nav a {
+  font-size: 13px; color: var(--ink-2);
+  text-decoration: none; letter-spacing: 0.04em;
+}
+nav.top-nav a:hover { color: var(--seal); }
+.top-cta { display: flex; gap: 10px; align-items: center; }
+
+/* Theme toggle button in header */
+.theme-btn {
+  background: transparent;
+  border: 0.5px solid var(--rule);
+  border-radius: var(--rad);
+  color: var(--ink-3);
+  font-family: var(--serif);
+  font-size: 12px;
+  padding: 5px 10px;
+  cursor: pointer;
+  transition: color 0.14s, border-color 0.14s;
+}
+.theme-btn:hover { color: var(--seal); border-color: var(--seal); }
+
+/* ── Main content ──────────────────────────────────────── */
+main.content { grid-column: 2; padding: 0; }
+
+/* ── Hero ─────────────────────────────────────────────── */
+.hero {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr;
+  gap: 48px;
+  padding: 64px 0 80px;
+  border-bottom: 0.5px solid var(--rule);
+  position: relative;
+}
+.hero-eyebrow {
+  display: flex; align-items: center; gap: 14px;
+  margin-bottom: 28px;
+}
+.hero-eyebrow .num {
+  font-family: var(--serif); color: var(--seal);
+  font-size: 14px; font-weight: 700;
+}
+.hero-eyebrow .label {
+  font-family: var(--serif); font-size: 11.5px;
+  letter-spacing: 0.5em; color: var(--ink-3); text-transform: uppercase;
+}
+.hero-eyebrow .rule { flex: 1; height: 0.5px; background: var(--ink); max-width: 80px; }
+
+h1.hero-title {
+  font-family: var(--serif);
+  font-weight: 900;
+  font-size: clamp(48px, 7vw, 88px);
+  line-height: 0.98;
+  letter-spacing: 0.02em;
+  color: var(--ink);
+  margin: 0 0 28px;
+}
+h1.hero-title .accent {
+  color: var(--seal);
+  position: relative;
+  display: inline-block;
+}
+h1.hero-title .accent::after {
+  content: "";
+  position: absolute;
+  left: 0; right: 0; bottom: -3px;
+  height: 5px;
+  background: var(--seal-soft);
+  border-radius: 2px;
+  z-index: -1;
+}
+.hero-lede {
+  font-family: var(--serif);
+  font-size: 17px;
+  line-height: 1.75;
+  color: var(--ink-2);
+  max-width: 520px;
+  margin: 0 0 36px;
+}
+.hero-lede em { font-style: italic; color: var(--seal); }
+.hero-cta { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.hero-cta .stat {
+  font-family: var(--serif);
+  font-size: 12px; color: var(--ink-3); margin-left: 4px;
+}
+
+/* Evidence card */
+.evidence {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: center;
+  padding: 0 0 0 32px;
+  border-left: 0.5px solid var(--rule);
+}
+.evidence-frame {
+  background: var(--paper-warm);
+  border: 1px solid var(--ink);
+  padding: 26px;
+  position: relative;
+  box-shadow: var(--shadow-2);
+  transform: rotate(-0.6deg);
+}
+.evidence-frame::before {
+  content: "";
+  position: absolute;
+  inset: 6px;
+  border: 0.5px solid var(--rule);
+  pointer-events: none;
+}
+.evidence-eyebrow {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 12px; padding-bottom: 10px;
+  border-bottom: 0.5px solid var(--rule);
+}
+.evidence-eyebrow .ts { font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); }
+.evidence-frame h4 {
+  font-family: var(--serif); font-size: 17px;
+  margin: 0 0 10px; line-height: 1.4;
+}
+.evidence-frame p {
+  font-family: var(--serif);
+  font-size: 13.5px; line-height: 1.7; color: var(--ink-2); margin: 0 0 14px;
+}
+.evidence-frame .ev-reactions {
+  display: flex; gap: 14px;
+  font-family: var(--serif);
+  font-size: 12px; color: var(--ink-3);
+  border-top: 0.5px solid var(--rule); padding-top: 10px;
+}
+.evidence-frame .ev-reactions span { display: flex; align-items: center; gap: 4px; }
+.evidence-stamp {
+  position: absolute;
+  bottom: -20px; right: -20px;
+  width: 68px; height: 68px;
+  background: var(--seal); color: var(--paper);
+  font-family: var(--serif); font-weight: 900;
+  font-size: 12px; line-height: 1.15;
+  display: flex; align-items: center; justify-content: center;
+  text-align: center;
+  transform: rotate(8deg);
+  letter-spacing: 0.08em;
+  box-shadow: var(--shadow-2);
+  border-radius: 3px; padding: 6px;
+}
+
+/* Decorative branch */
+.branch {
+  position: absolute; pointer-events: none;
+  color: var(--jade); opacity: 0.50;
+}
+.branch.tl { top: 0; left: -40px; width: 200px; transform: rotate(-10deg); }
+
+/* ── Principle ─────────────────────────────────────────── */
+.principle {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  gap: 56px;
+  padding: 80px 0;
+  border-bottom: 0.5px solid var(--rule);
+}
+.section-head { display: flex; flex-direction: column; gap: 10px; }
+.section-head .num {
+  font-family: var(--serif); color: var(--seal);
+  font-size: 52px; font-weight: 700; line-height: 1;
+}
+.section-head .label {
+  font-family: var(--serif); font-size: 20px;
+  font-weight: 700; letter-spacing: 0.1em; color: var(--ink);
+}
+.section-head .en {
+  font-family: var(--serif); font-style: italic;
+  color: var(--ink-3); font-size: 13px;
+}
+.double-rule {
+  border: none;
+  border-top: 0.5px solid var(--rule);
+  border-bottom: 0.5px solid var(--rule);
+  height: 4px; margin: 12px 0 0;
+}
+
+.principle-grid {
+  display: grid; grid-template-columns: 1fr 1fr;
+  gap: 40px;
+}
+.pcell h3 {
+  font-family: var(--serif); font-size: 21px;
+  margin: 0 0 12px; line-height: 1.3;
+}
+.pcell h3 .lead { color: var(--seal); font-weight: 700; margin-right: 6px; }
+.pcell p { font-family: var(--serif); font-size: 14px; line-height: 1.75; color: var(--ink-2); margin: 0 0 12px; }
+.pcell .demo {
+  margin-top: 16px; padding: 12px 14px;
+  background: var(--paper-2); border-left: 2px solid var(--ink);
+  font-family: var(--mono); font-size: 11.5px;
+  line-height: 1.7; color: var(--ink-2);
+  white-space: pre; overflow-x: auto;
+}
+.pcell .demo .strike { text-decoration: line-through; color: var(--ink-4); }
+.pcell .demo .ok { color: var(--jade-deep); font-weight: 500; }
+.pcell .demo .bad { color: var(--seal); }
+
+/* ── Flow ──────────────────────────────────────────────── */
+.flow { padding: 80px 0; border-bottom: 0.5px solid var(--rule); }
+.flow-head { margin-bottom: 48px; max-width: 680px; }
+.flow-head h2 {
+  font-family: var(--serif); font-size: 40px;
+  line-height: 1.2; margin: 12px 0 14px; font-weight: 700;
+}
+.flow-head p { font-family: var(--serif); font-size: 15px; line-height: 1.75; color: var(--ink-2); }
+.steps {
+  display: grid; grid-template-columns: repeat(4, 1fr);
+  gap: 0;
+  border-top: 1px solid var(--ink); border-bottom: 1px solid var(--ink);
+}
+.step {
+  padding: 26px 22px 32px; border-right: 0.5px solid var(--rule);
+  position: relative;
+}
+.step:last-child { border-right: none; }
+.step .step-n {
+  font-family: var(--serif); font-size: 11px;
+  letter-spacing: 0.4em; color: var(--seal);
+  font-weight: 700; margin-bottom: 16px;
+}
+.step h4 {
+  font-family: var(--serif); font-size: 17px;
+  margin: 0 0 8px; line-height: 1.4;
+}
+.step p { font-family: var(--serif); font-size: 13px; line-height: 1.65; color: var(--ink-2); margin: 0; }
+.step .glyph {
+  margin-top: 20px; height: 56px;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--jade);
+}
+
+/* ── Features ──────────────────────────────────────────── */
+.features { padding: 80px 0; border-bottom: 0.5px solid var(--rule); }
+.features-grid {
+  display: grid; grid-template-columns: repeat(3, 1fr);
+  gap: 1px; background: var(--rule);
+  margin-top: 40px; border: 1px solid var(--rule);
+}
+.feat {
+  background: var(--paper); padding: 28px 24px 32px;
+  display: flex; flex-direction: column; gap: 8px; min-height: 200px;
+}
+.feat .ico { width: 28px; height: 28px; color: var(--jade); margin-bottom: 6px; }
+.feat h4 { font-family: var(--serif); font-size: 17px; margin: 0; font-weight: 600; }
+.feat h4 .pin {
+  color: var(--ink-4); font-family: var(--serif);
+  font-size: 11px; font-weight: 400; margin-left: 5px;
+}
+.feat p { font-family: var(--serif); font-size: 13px; line-height: 1.65; color: var(--ink-2); margin: 0; }
+.feat .sample {
+  margin-top: auto; padding-top: 12px;
+  border-top: 0.5px dashed var(--rule);
+  font-family: var(--mono); font-size: 11px; color: var(--ink-3);
+}
+
+/* ── Schema table ──────────────────────────────────────── */
+.schema { padding: 80px 0; border-bottom: 0.5px solid var(--rule); }
+.schema-head { margin-bottom: 28px; }
+.schema-head h2 {
+  font-family: var(--serif); font-size: 34px; line-height: 1.2; margin: 10px 0 14px;
+}
+.schema-head p { font-family: var(--serif); color: var(--ink-2); font-size: 14px; max-width: 600px; line-height: 1.7; }
+table.schema-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+table.schema-table th, table.schema-table td {
+  padding: 12px 14px; text-align: left;
+  border-bottom: 0.5px solid var(--rule); vertical-align: top;
+}
+table.schema-table thead th {
+  border-bottom: 1px solid var(--ink);
+  font-family: var(--serif); font-weight: 700;
+  font-size: 11px; letter-spacing: 0.18em;
+  text-transform: uppercase; color: var(--ink);
+}
+table.schema-table td.tbl { font-family: var(--mono); color: var(--ink); font-weight: 500; }
+table.schema-table td { font-family: var(--serif); color: var(--ink-2); }
+
+/* ── Limits ─────────────────────────────────────────────── */
+.limits {
+  padding: 80px 0; border-bottom: 0.5px solid var(--rule);
+  display: grid; grid-template-columns: 220px 1fr; gap: 56px;
+}
+.limits-list { display: grid; gap: 24px; }
+.limit {
+  display: grid; grid-template-columns: 52px 1fr;
+  gap: 18px; padding-bottom: 24px; border-bottom: 0.5px solid var(--rule);
+}
+.limit:last-child { border-bottom: none; padding-bottom: 0; }
+.limit .num {
+  font-family: var(--serif); font-style: italic;
+  color: var(--seal); font-size: 28px; font-weight: 700; line-height: 1;
+}
+.limit h4 { font-family: var(--serif); font-size: 17px; margin: 0 0 8px; }
+.limit p { font-family: var(--serif); font-size: 13.5px; line-height: 1.7; color: var(--ink-2); margin: 0; }
+
+/* ── Closing ───────────────────────────────────────────── */
+.closing {
+  padding: 90px 0 70px; text-align: center; position: relative;
+}
+.closing .cn {
+  font-family: var(--serif); font-size: clamp(32px, 4.5vw, 58px);
+  font-weight: 700; line-height: 1.2;
+  letter-spacing: 0.06em; margin: 0 0 20px;
+}
+.closing .cn .accent { color: var(--seal); }
+.closing .en {
+  font-family: var(--serif); font-style: italic;
+  color: var(--ink-3); font-size: 15px; margin: 0 0 36px;
+}
+.closing .actions { display: inline-flex; gap: 12px; align-items: center; }
+.closing .stamp { margin: 32px auto 0; width: 56px; height: 56px; }
+
+/* ── Footer ────────────────────────────────────────────── */
+footer.bottom {
+  grid-column: 2; padding: 28px 0;
+  display: flex; justify-content: space-between; align-items: center;
+  border-top: 1px solid var(--ink);
+  color: var(--ink-3); font-size: 12px;
+}
+footer.bottom .colophon { font-family: var(--serif); font-style: italic; }
+footer.bottom a { color: var(--ink-2); text-decoration: none; margin-left: 16px; }
+footer.bottom a:hover { color: var(--seal); }
+
+/* ── Responsive ────────────────────────────────────────── */
+@media (max-width: 1080px) {
+  .hero { grid-template-columns: 1fr; gap: 40px; }
+  .evidence { padding-left: 0; border-left: none; }
+  .principle { grid-template-columns: 1fr; gap: 32px; }
+  .principle-grid { grid-template-columns: 1fr; }
+  .features-grid { grid-template-columns: 1fr 1fr; }
+  .steps { grid-template-columns: 1fr 1fr; }
+  .step:nth-child(2) { border-right: none; }
+  .step:nth-child(-n+2) { border-bottom: 0.5px solid var(--rule); }
+  .limits { grid-template-columns: 1fr; gap: 32px; }
+}
+@media (max-width: 640px) {
+  .page { grid-template-columns: 20px 1fr 20px; }
+  .features-grid, .steps { grid-template-columns: 1fr; }
+  .step { border-right: none; border-bottom: 0.5px solid var(--rule); }
+  nav.top-nav { display: none; }
+  .gutter-mark { font-size: 12px; }
+  h1.hero-title { font-size: 42px; }
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #1c1a17; --paper-2: #16140f; --paper-warm: #24211c;
+    --ink: #f0e8d8; --ink-2: #cabfa9; --ink-3: #8d8678; --ink-4: #5e5950;
+    --rule: rgba(240,232,216,0.14); --rule-soft: rgba(240,232,216,0.07);
+    --jade: #7ea077; --jade-deep: #a8c89e; --jade-soft: rgba(126,160,119,0.14);
+    --seal: #d97560; --seal-soft: rgba(217,117,96,0.16);
+    --gold: #d4a64a; --gold-soft: rgba(212,166,74,0.14);
+  }
+}
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="gutter">
+    <span class="gutter-mark">登录可见</span>
+    <span class="gutter-mark bottom">v · 2025</span>
+  </div>
+
+  <header class="top">
+    <div class="brand">
+      <span class="brand-cn">茶园树洞</span>
+      <span class="brand-en">— teahole · est. 2024</span>
+    </div>
+    <nav class="top-nav">
+      <a href="#principle">原理</a>
+      <a href="#flow">流程</a>
+      <a href="#features">功能</a>
+      <a href="#limits">边界</a>
+    </nav>
+    <div class="top-cta">
+      <button class="theme-btn" id="theme-btn">明 / 暗</button>
+      <!-- 把下面两个 href 改成你的 teahole 实例地址 -->
+      <a class="btn ghost small" href="#">登录</a>
+      <a class="btn seal small" href="#">申请加入 →</a>
+    </div>
+  </header>
+
+  <main class="content">
+    <!-- HERO -->
+    <section class="hero">
+      <svg class="branch tl" viewBox="0 0 200 160" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round">
+        <path d="M -10 80 Q 55 55 120 90 T 210 70"/>
+        <g transform="translate(45 70)"><path d="M0 0 Q 6-10 18-8 Q 12 2 0 0 Z" fill="currentColor" opacity="0.5"/></g>
+        <g transform="translate(87 84)"><path d="M0 0 Q 8-12 22-10 Q 14 4 0 0 Z" fill="currentColor" opacity="0.55"/></g>
+        <g transform="translate(138 80)"><path d="M0 0 Q 7-10 20-8 Q 13 3 0 0 Z" fill="currentColor" opacity="0.5"/></g>
+        <g transform="translate(178 74)"><path d="M0 0 Q 5-8 14-6 Q 10 2 0 0 Z" fill="currentColor" opacity="0.4"/></g>
+      </svg>
+
+      <div>
+        <div class="hero-eyebrow">
+          <span class="num">01</span>
+          <span class="rule"></span>
+          <span class="label">A Closed Garden · 内</span>
+        </div>
+        <h1 class="hero-title">
+          一个<br>
+          <span class="accent">不留身份</span>的<br>
+          内部树洞。
+        </h1>
+        <p class="hero-lede">
+          只有<em>茶园成员</em>能进，但成员的发言不会回链到账号——服务器只保存一枚 24 小时的发帖令牌哈希，
+          帖子和评论以 <span class="pseudo">a3f9b2c1</span> 之类的匿名 ID 落地。
+          <br><br>
+          访问受控、身份不可链。两件事我们都要。
+        </p>
+        <div class="hero-cta">
+          <a class="btn seal" href="#">申请加入 →</a>
+          <a class="btn ghost" href="#principle">先看原理</a>
+        </div>
+      </div>
+
+      <div class="evidence">
+        <div class="evidence-frame">
+          <div class="evidence-eyebrow">
+            <span class="pseudo">a3f9b2c1</span>
+            <span class="ts">10/24 · 23:47</span>
+          </div>
+          <h4>关于「沉默的螺旋」在小社群里失效的几种情形</h4>
+          <p>
+            这周课讨论得不太尽兴，想接着写一点。第一种情形是当群体本身就被预筛过的时候——
+            你知道屋子里的人多半同意你，于是你说了……
+          </p>
+          <div class="ev-reactions">
+            <span>♡ 12</span>
+            <span>↺ 5 评论</span>
+            <span style="margin-left:auto;color:var(--jade);">关注中</span>
+          </div>
+        </div>
+        <div class="evidence-stamp">默认<br>匿名</div>
+      </div>
+    </section>
+
+    <!-- PRINCIPLE -->
+    <section class="principle" id="principle">
+      <div class="section-head">
+        <span class="num">壹</span>
+        <span class="label">取舍</span>
+        <span class="en">The trade-off</span>
+        <hr class="double-rule">
+      </div>
+      <div>
+        <p style="font-family:var(--serif);font-size:20px;line-height:1.6;color:var(--ink);margin:0 0 28px;max-width:600px;">
+          两条要求互相拉扯：<em style="color:var(--seal);font-style:normal;">严格准入</em>，与<em style="color:var(--seal);font-style:normal;">默认不可链</em>。
+          常见做法「登录后用昵称发言」过不了第二关——
+          <code style="font-family:var(--mono);background:var(--paper-2);padding:1px 6px;font-size:13px;">posts.user_id = 42</code> 一行就把人卖了。
+        </p>
+        <div class="principle-grid">
+          <div class="pcell">
+            <h3><span class="lead">壹</span>把「证明你是成员」和「证明你能发言」拆开。</h3>
+            <p>
+              登录后你拿到一枚长期 cookie，只用来证明你是茶园成员；
+              发帖前另外领一枚随机 32 字节令牌，服务器只存它的 SHA-256。
+              凭据是分离的，账号永远不会出现在内容旁边。
+            </p>
+            <div class="demo"><span class="strike">posts.user_id = 42</span>      ← 行不通
+<span class="ok">posts.pseudonym = "a3f9b2c1"</span>  ← teahole</div>
+          </div>
+          <div class="pcell">
+            <h3><span class="lead">贰</span>令牌 24 小时后失效，连边一起删。</h3>
+            <p>
+              每 10 分钟一次清扫，过期令牌哈希被删除，FK 级联把反应也带走。
+              那一刻起，旧帖子在数据库里再也找不到对应的凭据——
+              你也同时失去了编辑/删除它的权限。
+            </p>
+            <div class="demo">DELETE FROM post_tokens
+  WHERE expires_at &lt; now;
+<span class="bad">— ↳ reactions FK CASCADE</span>
+<span class="ok">— ↳ posts.pseudonym 留下，无主</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- FLOW -->
+    <section class="flow" id="flow">
+      <div class="flow-head">
+        <div class="hero-eyebrow"><span class="num">02</span><span class="rule"></span><span class="label">How it runs · 流程</span></div>
+        <h2>从注册到发言，<br>一条窄路。</h2>
+        <p>每一步都只交付当下需要的东西，不留多余的关联。所有写入都要带令牌，服务器永远当场把它哈希掉。</p>
+      </div>
+      <div class="steps">
+        <div class="step">
+          <div class="step-n">壹 · 注册</div>
+          <h4>邮箱白名单 · 验证码登录</h4>
+          <p>邮箱 SHA-256 必须命中内存里的白名单。原文邮箱不写进数据库、不进日志；只取一个 6 位码完成验证。</p>
+          <div class="glyph">
+            <svg width="52" height="52" viewBox="0 0 52 52" fill="none" stroke="currentColor" stroke-width="1.4">
+              <rect x="4" y="12" width="44" height="28" rx="2"/>
+              <path d="M4 14 L26 28 L48 14"/>
+            </svg>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-n">贰 · 领取</div>
+          <h4>申领一枚发帖令牌</h4>
+          <p>点「领取/轮换」拿到 32 字节随机串。服务器只存哈希 + 过期时间，外加你账号上的当日计数——明文不再回到任何地方。</p>
+          <div class="glyph">
+            <svg width="60" height="52" viewBox="0 0 60 52" fill="none" stroke="currentColor" stroke-width="1.4">
+              <circle cx="18" cy="26" r="8"/>
+              <path d="M26 26 L54 26 M44 21 L54 26 L44 31"/>
+              <circle cx="18" cy="26" r="2.5" fill="currentColor"/>
+            </svg>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-n">叁 · 发言</div>
+          <h4>带令牌写帖、评论、反应</h4>
+          <p>前 8 位哈希成为你这一天的匿名 ID。管理员发言会署名公开；其他人则是 <span class="pseudo">a3f9b2c1</span> 这样的随机串。</p>
+          <div class="glyph">
+            <svg width="60" height="52" viewBox="0 0 60 52" fill="none" stroke="currentColor" stroke-width="1.4">
+              <path d="M6 10 H54 V38 H28 L18 48 V38 H6 Z"/>
+              <line x1="12" y1="20" x2="48" y2="20"/>
+              <line x1="12" y1="28" x2="40" y2="28"/>
+            </svg>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-n">肆 · 失效</div>
+          <h4>24h 后，连同关联一起拆掉</h4>
+          <p>过期那一刻，编辑/删除权限随令牌一起消失，反应被级联拆除——<em style="color:var(--seal);font-style:normal;">这正是默认状态</em>，不是 bug。</p>
+          <div class="glyph">
+            <svg width="52" height="52" viewBox="0 0 52 52" fill="none" stroke="currentColor" stroke-width="1.4">
+              <circle cx="26" cy="26" r="18"/>
+              <path d="M26 12 V26 L36 32"/>
+              <path d="M12 12 L40 40" stroke="var(--seal)" stroke-width="1.2"/>
+            </svg>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- FEATURES -->
+    <section class="features" id="features">
+      <div class="hero-eyebrow"><span class="num">03</span><span class="rule"></span><span class="label">What's inside · 功能</span></div>
+      <h2 style="font-family:var(--serif);font-size:34px;margin:12px 0 0;font-weight:700;line-height:1.2;">
+        不只是一个匿名版面。
+      </h2>
+      <div class="features-grid">
+        <div class="feat">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 4h12l4 4v12H4z"/><path d="M16 4v4h4"/><path d="M8 12h8M8 16h6"/></svg>
+          <h4>Markdown · LaTeX · 高亮 <span class="pin">基础</span></h4>
+          <p>正文支持小子集 Markdown，行内 <span class="pseudo">$E=mc^2$</span> 与块级公式由 KaTeX 渲染。代码围栏按语言自动着色。</p>
+          <div class="sample">```python<br>def hello(): return "茶"</div>
+        </div>
+        <div class="feat">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+          <h4>全文检索 · 三字以上即可</h4>
+          <p>FTS5 + trigram tokenizer，CJK 也能搜。<span class="pseudo">#123</span> 直接跳帖。搜索词不进日志。</p>
+          <div class="sample">→ "沉默的螺旋"<span style="color:var(--jade);"> · 命中 4 篇</span></div>
+        </div>
+        <div class="feat">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 2 L15 8 L22 9 L17 14 L18 21 L12 18 L6 21 L7 14 L2 9 L9 8 Z"/></svg>
+          <h4>反应 · 一令一票</h4>
+          <p>👍❤️😂😮😢🎉 六种反应。同一帖、同一令牌、同一种类，只算一次。令牌过期，计数留下，关联消失。</p>
+          <div class="sample">♡ 12   👍 8   🎉 3</div>
+        </div>
+        <div class="feat">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 4 L5 20 L12 16 L19 20 L19 4 Z"/></svg>
+          <h4>收藏 · 关注 · 频道</h4>
+          <p>★ 收藏绑账号——换令牌也不会丢。📌 置顶频道、🔕 静音不关心的；新评论给计数，不显内容。</p>
+          <div class="sample">★ 12 篇 · 关注 3 个线索</div>
+        </div>
+        <div class="feat">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="6" cy="18" r="3"/><circle cx="18" cy="6" r="3"/><path d="M9 15 L15 9"/><path d="M3 21 L3 18 L18 3 L21 3"/></svg>
+          <h4>@提醒 · 不出收件箱</h4>
+          <p>@8 字符 ID 仅会推到那枚令牌的收件箱里。令牌一过期，提醒也就停了。</p>
+          <div class="sample">@a3f9b2c1<span style="color:var(--ink-4);"> · 24h 内有效</span></div>
+        </div>
+        <div class="feat">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="6.18" cy="17.82" r="2.18"/><path d="M4 4.44A15.56 15.56 0 0 1 19.56 20"/><path d="M4 10.1A9.9 9.9 0 0 1 13.9 20"/></svg>
+          <h4>RSS · 共享文档 · 公告</h4>
+          <p>登录用户可订阅 <span class="pseudo">/api/feed.xml</span>，最近 50 帖；wiki 式共享文档任意有效令牌可编辑。公告管理员署名。</p>
+          <div class="sample">/api/feed.xml<span style="color:var(--jade);"> · 已就绪</span></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SCHEMA TABLE -->
+    <section class="schema">
+      <div class="schema-head">
+        <div class="hero-eyebrow"><span class="num">04</span><span class="rule"></span><span class="label">In the database · 当下数据</span></div>
+        <h2>什么会被写下来？<br>什么不会？</h2>
+        <p>规则：把账号挪到读取偏好那一侧，<em style="color:var(--seal);font-style:normal;">不让它出现在内容旁边</em>。普通成员的帖子和评论里没有指回 users 的路径。</p>
+      </div>
+      <table class="schema-table">
+        <thead>
+          <tr>
+            <th style="width:200px;">表</th>
+            <th style="width:190px;">绑定账号？</th>
+            <th>内容</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td class="tbl">users</td><td><span class="pill ok">是</span></td><td>邮箱、bcrypt 哈希、当日令牌计数</td></tr>
+          <tr><td class="tbl">post_tokens</td><td><span class="pill no">否</span></td><td>sha256(token)、过期时间</td></tr>
+          <tr><td class="tbl">posts</td><td><span class="pill dual">普通匿名 / 管理员署名</span></td><td>pseudonym、标题、正文、频道、时间</td></tr>
+          <tr><td class="tbl">comments</td><td><span class="pill dual">普通匿名 / 管理员署名</span></td><td>pseudonym、正文、所属帖、父评论</td></tr>
+          <tr><td class="tbl">reactions</td><td><span class="pill no">否（FK 级联）</span></td><td>帖子、令牌哈希、反应种类</td></tr>
+          <tr><td class="tbl">mentions</td><td><span class="pill no">否（指向 pseudonym）</span></td><td>目标、来源帖/评论、时间</td></tr>
+          <tr><td class="tbl">saved_posts</td><td><span class="pill ok">是</span></td><td>账号 × 帖子（书签）</td></tr>
+          <tr><td class="tbl">follows / channel_prefs</td><td><span class="pill ok">是</span></td><td>读取游标、置顶 / 静音</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- LIMITS -->
+    <section class="limits" id="limits">
+      <div class="section-head">
+        <span class="num">伍</span>
+        <span class="label">边界</span>
+        <span class="en">Known limits</span>
+        <hr class="double-rule">
+      </div>
+      <div class="limits-list">
+        <div class="limit">
+          <span class="num">i.</span>
+          <div>
+            <h4>时间相关性。</h4>
+            <p>能拿到 web 日志或网络抓包的运维，可以把「某用户取了令牌」与「某令牌发了帖」对上。真正的不可链需要盲签名方案——teahole 只让<em style="color:var(--seal);font-style:normal;">数据库</em>不可链。</p>
+          </div>
+        </div>
+        <div class="limit">
+          <span class="num">ii.</span>
+          <div>
+            <h4>管理员发言公开。</h4>
+            <p>这是产品取舍而非缺陷——@admin 直接署名，方便反馈。匿名规则只对普通成员生效。</p>
+          </div>
+        </div>
+        <div class="limit">
+          <span class="num">iii.</span>
+          <div>
+            <h4>令牌存在 localStorage。</h4>
+            <p>清浏览器 = 当日剩余配额一起没。要重新申领，会再吃掉一枚每日上限（默认 5 枚）。</p>
+          </div>
+        </div>
+        <div class="limit">
+          <span class="num">iv.</span>
+          <div>
+            <h4>滥用上限。</h4>
+            <p>每日令牌帽位限制了「同一用户内的 sybils」。管理员能删内容，但<em style="color:var(--seal);font-style:normal;">仍然不能反查到具体账号</em>。</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- CLOSING -->
+    <section class="closing">
+      <div class="cn">推开树洞，<br>把名字<span class="accent">留在外面</span>。</div>
+      <div class="en">— Push open the hollow. Leave your name outside. —</div>
+      <div class="actions">
+        <a class="btn seal" href="#">申请加入 →</a>
+        <a class="btn ghost" href="https://github.com" target="_blank" rel="noopener">GitHub</a>
+      </div>
+      <div class="stamp">
+        <svg viewBox="0 0 56 56" width="56" height="56">
+          <rect x="2" y="2" width="52" height="52" rx="3" fill="none" stroke="var(--seal)" stroke-width="2"/>
+          <text x="28" y="20" text-anchor="middle" font-family="Noto Serif SC,Songti SC,serif" font-size="15" font-weight="900" fill="var(--seal)">茶园</text>
+          <text x="28" y="40" text-anchor="middle" font-family="Noto Serif SC,Songti SC,serif" font-size="15" font-weight="900" fill="var(--seal)">树洞</text>
+          <line x1="6" y1="28" x2="50" y2="28" stroke="var(--seal)" stroke-width="0.7"/>
+        </svg>
+      </div>
+    </section>
+  </main>
+
+  <footer class="bottom">
+    <span class="colophon">teahole · est. 2024 · made for a small garden</span>
+    <div>
+      <a href="https://github.com" target="_blank" rel="noopener">GitHub</a>
+    </div>
+  </footer>
+
+  <div class="gutter right">
+    <span class="gutter-mark">默认匿名</span>
+    <span class="gutter-mark bottom">teahole · v1</span>
+  </div>
+</div>
+
+<script>
+// Simple theme toggle
+(function() {
+  var root = document.documentElement;
+  var btn  = document.getElementById('theme-btn');
+  var pref = localStorage.getItem('th-theme');
+  if (pref) root.dataset.theme = pref;
+  if (btn) btn.addEventListener('click', function() {
+    var cur = root.dataset.theme;
+    var next = (!cur || cur === 'light') ? 'dark' : 'light';
+    root.dataset.theme = next;
+    localStorage.setItem('th-theme', next);
+  });
+})();
+</script>
+</body>
+</html>
