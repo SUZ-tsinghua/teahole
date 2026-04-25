@@ -648,8 +648,9 @@
   align-items: center;
   gap: 7px;
   flex-wrap: wrap;
-  margin: 28px 0 34px;
-  padding-bottom: 24px;
+  margin: 20px 0 28px;
+  padding: 20px 0;
+  border-top: 0.5px solid var(--rule);
   border-bottom: 0.5px solid var(--rule);
 }
 .thread-toolbar button,
