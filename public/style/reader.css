@@ -702,7 +702,7 @@
   font-weight: 600;
 }
 .reaction-pill.is-mine:hover { background: var(--seal-soft); border-color: var(--seal); transform: none; }
-.reaction-pill.is-mine .reaction-emoji { animation: pop 280ms; }
+#reactions .reaction-pill.is-mine .reaction-emoji { animation: pop 280ms; }
 @keyframes pop {
   0%   { transform: scale(1); }
   50%  { transform: scale(1.3); }
