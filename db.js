@@ -86,6 +86,22 @@ CREATE TABLE IF NOT EXISTS reactions (
 );
 CREATE INDEX IF NOT EXISTS idx_reactions_post ON reactions(post_id);
 
+-- Comment reactions: same shape as the post reactions table, keyed by
+-- comment_id. The comments to posts cascade plus the token_hash to
+-- post_tokens cascade both apply, so a deleted post or expired token
+-- wipes these rows automatically. Privacy model is identical: no
+-- user_id, ever.
+CREATE TABLE IF NOT EXISTS comment_reactions (
+  comment_id INTEGER NOT NULL,
+  token_hash TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (comment_id, token_hash, kind),
+  FOREIGN KEY (comment_id) REFERENCES comments(id) ON DELETE CASCADE,
+  FOREIGN KEY (token_hash) REFERENCES post_tokens(token_hash) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_comment_reactions_comment ON comment_reactions(comment_id);
+
 -- Polls attach 0..1 to a post. question + ordered option list. A vote is
 -- keyed by token_hash (not user_id), so votes cascade out when the token
 -- expires — same privacy model as reactions. PK (poll_id, token_hash)
@@ -275,6 +291,7 @@ CREATE TABLE IF NOT EXISTS saved_docs (
   FOREIGN KEY (doc_id) REFERENCES docs(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_saved_docs_user ON saved_docs(user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_saved_docs_doc  ON saved_docs(doc_id);
 
 -- One-shot email verification codes. Keyed by email so sending a new
 -- code for an address replaces any pending one. Stores only the hash

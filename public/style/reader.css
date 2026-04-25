@@ -134,7 +134,6 @@
   border-bottom-color: var(--seal);
 }
 .feed-tab.is-active:hover { color: var(--ink); background: transparent; }
-.filter-bar { margin-top: 12px; }
 
 .feed-pane #feed {
   flex: 1;
@@ -147,7 +146,6 @@
   flex-direction: column;
   gap: 0;
 }
-.filter-bar { margin-bottom: 8px; }
 
 /* SECTION: post-card */
 .post {
@@ -193,7 +191,8 @@
   flex-wrap: wrap;
 }
 .post-meta .ch-tag,
-#thread-meta .ch-tag {
+#thread-meta .ch-tag,
+#doc-meta .ch-tag {
   font-family: var(--serif);
   font-size: 11px;
   color: var(--seal);
@@ -208,10 +207,14 @@
   box-shadow: none;
 }
 .post-meta .ch-tag:hover,
-#thread-meta .ch-tag:hover { color: var(--seal-dark); background: transparent; transform: none; box-shadow: none; }
-.post-meta .sep { color: var(--ink-4); font-family: var(--serif); }
+#thread-meta .ch-tag:hover,
+#doc-meta .ch-tag:hover { color: var(--seal-dark); background: transparent; transform: none; box-shadow: none; }
+.post-meta .sep,
+#doc-meta .sep { color: var(--ink-4); font-family: var(--serif); }
 .post-meta .meta-pseudo-chip,
-#thread-meta .meta-pseudo-chip {
+#thread-meta .meta-pseudo-chip,
+#doc-meta .meta-pseudo-chip,
+.comment > .meta .meta-pseudo-chip {
   display: inline-flex;
   align-items: baseline;
   gap: 3px;
@@ -223,21 +226,27 @@
   line-height: 1.35;
 }
 .post-meta .meta-pseudo,
-#thread-meta .meta-pseudo {
+#thread-meta .meta-pseudo,
+#doc-meta .meta-pseudo,
+.comment > .meta .meta-pseudo {
   font-family: var(--mono);
   letter-spacing: 0.04em;
   color: inherit;
 }
 .post-meta .meta-mine,
-#thread-meta .meta-mine {
+#thread-meta .meta-mine,
+#doc-meta .meta-mine,
+.comment > .meta .meta-mine {
   color: var(--gold);
   font-family: var(--serif);
   font-weight: 600;
 }
 .post-meta .meta-ts,
-#thread-meta .meta-ts { font-family: var(--mono); color: var(--ink-4); }
+#thread-meta .meta-ts,
+#doc-meta .meta-ts { font-family: var(--mono); color: var(--ink-4); }
 .post-meta .meta-edited,
-#thread-meta .meta-edited { font-family: var(--serif); font-style: italic; color: var(--ink-4); }
+#thread-meta .meta-edited,
+#doc-meta .meta-edited { font-family: var(--serif); font-style: italic; color: var(--ink-4); }
 
 /* Title row — the feed card keeps the post id visible while the thread
    header reuses the larger .id-badge--lg variant. */
@@ -354,10 +363,14 @@
 /* Per-pseudonym hue (used by mentions & legacy meta spans) */
 .meta[data-pseudonym],
 .post-meta[data-pseudonym] .meta-pseudo-chip,
-#thread-meta[data-pseudonym] .meta-pseudo-chip { color: hsl(var(--id-hue, 210) 45% 42%); }
+#thread-meta[data-pseudonym] .meta-pseudo-chip,
+#doc-meta[data-pseudonym] .meta-pseudo-chip,
+.comment[data-pseudonym] > .meta .meta-pseudo-chip { color: hsl(var(--id-hue, 210) 45% 42%); }
 :root[data-theme="dark"] .meta[data-pseudonym],
 :root[data-theme="dark"] .post-meta[data-pseudonym] .meta-pseudo-chip,
-:root[data-theme="dark"] #thread-meta[data-pseudonym] .meta-pseudo-chip { color: hsl(var(--id-hue, 210) 50% 68%); }
+:root[data-theme="dark"] #thread-meta[data-pseudonym] .meta-pseudo-chip,
+:root[data-theme="dark"] #doc-meta[data-pseudonym] .meta-pseudo-chip,
+:root[data-theme="dark"] .comment[data-pseudonym] > .meta .meta-pseudo-chip { color: hsl(var(--id-hue, 210) 50% 68%); }
 
 .comment[data-pseudonym] {
   /* marker is on the avatar; no hue border */
@@ -396,27 +409,17 @@
   font-style: italic;
 }
 
-/* Docs list reuses .post cards */
-.doc-card .id-badge--doc {
-  font-size: 14px;
-  padding: 0;
-  background: transparent;
-  border: 0;
-  color: var(--jade);
+/* Tinted id-badge variants. Posts wear the seal red, docs wear jade —
+   same chip geometry as the base .id-badge so layout doesn't shift. */
+.id-badge--post {
+  color: var(--seal);
+  background: var(--seal-soft);
+  border-color: transparent;
 }
-.doc-card .doc-meta { margin-top: 2px; }
-.doc-badge {
-  display: inline-block;
-  font-family: var(--serif);
-  font-size: 10px;
-  letter-spacing: 0.2em;
-  text-transform: uppercase;
-  font-weight: 700;
+.id-badge--doc {
   color: var(--jade);
   background: var(--jade-soft);
-  border-radius: var(--rad);
-  padding: 2px 8px;
-  margin-bottom: 10px;
+  border-color: transparent;
 }
 .docs-feed {
   flex: 1;
@@ -490,19 +493,25 @@
 .doc-editor-toolbar { gap: 8px; }
 .doc-editor-hint { margin-left: auto; font-size: 12px; color: var(--ink-3); font-family: var(--serif); font-style: italic; }
 .doc-actions {
-  margin: 18px 0 26px;
-  padding-bottom: 16px;
-  border-bottom: 0.5px solid var(--ink);
   flex-wrap: wrap;
 }
-.doc-actions .doc-edit-btn {
-  min-width: 132px;
+/* Primary pill: same rounded geometry as the follow stat pill, but
+   filled (var(--ink)) so it stays the dominant action. Applies to any
+   non-ghost primary button in the doc toolbar — covers 编辑此文档,
+   保存/发布, etc. */
+#doc-toolbar button.small:not(.ghost),
+#doc-toolbar .doc-edit-btn {
+  border-radius: 99px;
+  padding: 7px 18px;
+  min-height: 38px;
+  font-family: var(--serif);
+  font-size: 13px;
+  line-height: 1.2;
 }
 @media (max-width: 760px) {
   .doc-editor { grid-template-columns: 1fr; }
   .doc-preview { max-height: none; }
   .doc-editor-hint { display: none; }
-  .doc-actions { margin-top: 14px; }
 }
 
 /* SECTION: thread */
@@ -560,7 +569,8 @@
   border-bottom: 0.5px solid var(--rule);
 }
 
-#thread-meta {
+#thread-meta,
+#doc-meta {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -572,20 +582,26 @@
   border-bottom: none;
   flex-wrap: wrap;
 }
-#thread-meta .meta-name {
+#thread-meta .meta-name,
+#doc-meta .meta-name {
   color: hsl(var(--id-hue, 210) 48% 42%);
   font-weight: 600;
 }
-:root[data-theme="dark"] #thread-meta .meta-name {
+:root[data-theme="dark"] #thread-meta .meta-name,
+:root[data-theme="dark"] #doc-meta .meta-name {
   color: hsl(var(--id-hue, 210) 58% 70%);
 }
 #thread-meta .sep,
 #thread-meta .meta-ts,
-#thread-meta .meta-edited {
+#thread-meta .meta-edited,
+#doc-meta .sep,
+#doc-meta .meta-ts,
+#doc-meta .meta-edited {
   color: var(--ink-4);
 }
 
-#thread-meta .ch-tag {
+#thread-meta .ch-tag,
+#doc-meta .ch-tag {
   font-size: 12px;
   letter-spacing: 0.12em;
 }
@@ -651,9 +667,8 @@
   gap: 7px;
   flex-wrap: wrap;
   margin: 20px 0 28px;
-  padding: 20px 0;
+  padding: 20px 0 0;
   border-top: 0.5px solid var(--rule);
-  border-bottom: 0.5px solid var(--rule);
 }
 .thread-toolbar button,
 .reaction-pill {
@@ -729,7 +744,6 @@
   gap: 10px;
 }
 #thread-view > h3 {
-  border-top: 0.5px solid var(--rule);
   margin-top: 4px;
   padding-top: 24px;
 }
@@ -805,19 +819,6 @@
 .comment > .meta .meta-edited {
   color: var(--ink-4);
 }
-.comment > .meta .meta-name {
-  font-weight: 600;
-  letter-spacing: 0.03em;
-}
-.comment.admin > .meta .meta-name {
-  color: var(--seal);
-}
-.comment[data-pseudonym]:not(.admin) > .meta .meta-name {
-  color: hsl(var(--id-hue, 210) 48% 42%);
-}
-:root[data-theme="dark"] .comment[data-pseudonym]:not(.admin) > .meta .meta-name {
-  color: hsl(var(--id-hue, 210) 58% 70%);
-}
 .comment-body {
   font-family: var(--serif);
   color: var(--ink);
@@ -858,6 +859,21 @@
 }
 .link-btn:hover { color: var(--seal); background: transparent; transform: none; box-shadow: none; }
 .link-btn.danger:hover { color: var(--danger); background: transparent; }
+
+/* Inline 👍 / 👎 pills sitting in the comment-actions row. They match
+   .link-btn density but get a small emoji + count, with a seal tint
+   when the current token has reacted. */
+.link-btn.comment-react {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 0;
+}
+.link-btn.comment-react .react-emoji { font-size: 12px; line-height: 1; }
+.link-btn.comment-react .react-count { font-variant-numeric: tabular-nums; }
+.link-btn.comment-react .react-count.is-zero { color: var(--ink-4); }
+.link-btn.comment-react.is-mine { color: var(--seal); }
+.link-btn.comment-react.is-mine .react-count { color: var(--seal); }
 
 /* Nested comments: indent + dashed left guide */
 .comment.nested {

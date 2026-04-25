@@ -73,8 +73,8 @@
   }
   .reader-card h2 { font-size: 20px; line-height: 1.3; }
   #thread-title { font-size: 30px; line-height: 1.18; }
-  #thread-meta { margin-bottom: 12px; }
-.thread-toolbar { gap: 6px; margin-bottom: 22px; padding-bottom: 18px; }
+  #thread-meta, #doc-meta { margin-bottom: 12px; }
+.thread-toolbar { gap: 6px; margin-bottom: 22px; padding-top: 16px; }
   #thread-body.prose { font-size: 16px; line-height: 1.8; }
   .dialog-card {
     padding: 18px 20px;

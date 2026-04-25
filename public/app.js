@@ -47,7 +47,14 @@ const SIDEBAR_MAX = 520;
 const REACTION_KINDS = ['👍', '👎'];
 const REACTION_LABELS = { '👍': '点赞', '👎': '点踩' };
 const PSEUDONYM_RE = /^[a-f0-9]{8}$/;
-const MENTION_IN_TEXT_RE = /@([A-Za-z0-9_]{3,32})|#(\d{1,10})/g;
+// Mention/link tokens parsed in body text:
+//   @handle           — pseudonym or admin display name
+//   #post<id>         — link to a post     (canonical)
+//   #doc<id>          — link to a shared doc
+//   #<id>             — legacy bare-number; treated as #post<id>
+// Order matters: the typed prefixes must be tried before the bare-number
+// fallback so `#post12` doesn't get parsed as `#post` + `12`.
+const MENTION_IN_TEXT_RE = /@([A-Za-z0-9_]{3,32})|#(post|doc)(\d{1,10})|#(\d{1,10})/g;
 const MAX_VISUAL_DEPTH = 4;
 const MENTION_POLL_MS = 60_000;
 
@@ -222,14 +229,14 @@ function metaTimeSuffix(createdAt, editedAt) {
   }
   return parts;
 }
-function metaLineParts(pseudonym, createdAt, editedAt) {
+function metaLineParts(pseudonym, createdAt, editedAt, authorKey) {
   return [
-    el('span', { className: 'meta-name', textContent: pseudonym }),
+    pseudonymChip(pseudonym, authorKey || pseudonym),
     ...metaTimeSuffix(createdAt, editedAt),
   ];
 }
-function metaLine(pseudonym, createdAt, editedAt) {
-  const node = el('div', { className: 'meta' }, metaLineParts(pseudonym, createdAt, editedAt));
+function metaLine(pseudonym, createdAt, editedAt, authorKey) {
+  const node = el('div', { className: 'meta' }, metaLineParts(pseudonym, createdAt, editedAt, authorKey));
   applyIdHue(node, pseudonym);
   return node;
 }
@@ -822,17 +829,6 @@ function renderRailNavState() {
 }
 
 function renderFilterBar() {
-  const bar = $('#filter-bar');
-  bar.innerHTML = '';
-  const isDocs = feedMode === 'docs';
-  if (!filterState.kind || filterState.kind === 'channel' || filterState.kind === 'saved') {
-    bar.hidden = true;
-  } else {
-    bar.hidden = false;
-    let text;
-    text = `搜索：${filterState.value}`;
-    bar.appendChild(el('span', { className: 'filter-text', textContent: text }));
-  }
   renderFeedHeader();
   renderChannelList();
   renderRailNavState();
@@ -859,23 +855,13 @@ function renderFeedHeader() {
   else title = isDocs ? '共享文档' : '动态';
   labelEl.textContent = title;
 
-  // Stat line: count + identity
+  // Stat line: count only — identity is shown in the sidebar token chip.
   const count = isDocs
     ? (lastDocsCount != null ? lastDocsCount : '')
     : feedPosts.length;
   statEl.innerHTML = '';
   if (count !== '') {
     statEl.appendChild(document.createTextNode(`${count} 篇`));
-  }
-  if (!isDocs && !isSaved) {
-    const t = getToken();
-    statEl.appendChild(document.createTextNode(' · 默认匿名 · 你是 '));
-    if (t && t.pseudonym) {
-      const ps = el('code', { className: 'pseudo', textContent: tokenDisplayName(t) });
-      statEl.appendChild(ps);
-    } else {
-      statEl.appendChild(el('span', { className: 'pseudo', textContent: '未领取', style: 'opacity:0.6' }));
-    }
   }
 
   // Description
@@ -891,7 +877,7 @@ function renderFeedHeader() {
   } else if (isSearch) {
     desc = isDocs
       ? '在所有共享文档的标题和正文中搜索。'
-      : '在所有帖子和评论里搜索。命中评论时会显示「评论命中」标签。';
+      : '在所有帖子和评论里搜索。';
   } else if (isDocs) {
     desc = 'Wiki 式协作。任何持有效令牌的用户都可以编辑——历史里只显示当时的匿名身份。';
   } else {
@@ -1270,8 +1256,11 @@ async function toggleSaved(postId) {
 async function toggleSavedDoc(docId) {
   const wasSaved = savedDocIds.has(docId);
   try {
-    await api(wasSaved ? 'DELETE' : 'POST', `/api/saved-docs/${docId}`);
+    const r = await api(wasSaved ? 'DELETE' : 'POST', `/api/saved-docs/${docId}`);
     if (wasSaved) savedDocIds.delete(docId); else savedDocIds.add(docId);
+    if (currentDocRow && currentDocRow.id === docId && r.follow_count != null) {
+      currentDocRow.follow_count = r.follow_count;
+    }
     renderDocActions(currentDocRow);
     if (filterState.kind === 'saved' && feedMode === 'docs') await loadDocs();
   } catch (err) {
@@ -1560,27 +1549,36 @@ async function loadDocs() {
 }
 
 function renderDocCard(d) {
-  const titleRow = el('div', { className: 'post-title-row' }, [
-    el('span', { className: 'id-badge id-badge--doc', textContent: '📄' }),
-    el('span', { className: 'post-title', textContent: d.title }),
-  ]);
-  const children = [titleRow];
   const ch = channelById(d.channel_id);
-  if (ch) {
-    const badge = el('button', {
-      type: 'button', className: 'channel-badge small', textContent: ch.name, title: ch.description || ch.name,
-    });
-    badge.addEventListener('click', (e) => { e.stopPropagation(); filterByChannel(ch.id); });
-    children.push(badge);
-  }
   const lastTs = d.updated_at || d.created_at;
   const editor = d.last_editor_pseudonym || d.created_pseudonym;
-  const metaLineEl = el('div', { className: 'meta doc-meta' });
-  applyIdHue(metaLineEl, editor);
-  metaLineEl.textContent =
-    `@${editor} · ${d.updated_at ? '最近编辑于' : '创建于'} ${fmtDate(lastTs)}`;
-  children.push(metaLineEl);
-  const node = el('div', { className: 'post doc-card' }, children);
+
+  // Top meta line: [#channel] · pseudo · ts (· 已编辑) — mirrors post-card.
+  const metaChildren = [];
+  if (ch) {
+    const chTag = el('button', {
+      type: 'button', className: 'ch-tag', textContent: '#' + ch.name, title: ch.description || ch.name,
+    });
+    chTag.addEventListener('click', (e) => { e.stopPropagation(); filterByChannel(ch.id); });
+    metaChildren.push(chTag);
+    metaChildren.push(el('span', { className: 'sep', textContent: '·' }));
+  }
+  metaChildren.push(pseudonymChip(editor, editor));
+  metaChildren.push(el('span', { className: 'sep', textContent: '·' }));
+  metaChildren.push(el('span', { className: 'meta-ts', textContent: fmtDate(lastTs) }));
+  if (d.updated_at) {
+    metaChildren.push(el('span', { className: 'sep', textContent: '·' }));
+    metaChildren.push(el('span', { className: 'meta-edited', textContent: '已编辑' }));
+  }
+  const metaRow = el('div', { className: 'post-meta' }, metaChildren);
+  applyIdHue(metaRow, editor);
+
+  const titleRow = el('div', { className: 'post-title-row' }, [
+    el('span', { className: 'id-badge id-badge--doc', textContent: `#doc${d.id}` }),
+    el('span', { className: 'post-title', textContent: d.title }),
+  ]);
+
+  const node = el('div', { className: 'post doc-card' }, [metaRow, titleRow]);
   node.dataset.docId = d.id;
   node.addEventListener('click', () => openDoc(d.id));
   return node;
@@ -1669,8 +1667,8 @@ function renderDocView(opts = {}) {
     $('#doc-body').appendChild(el('p', { className: 'muted', textContent: opts.errorMessage || '未找到' }));
     $('#doc-editor').hidden = true;
     $('#doc-editor-toolbar').hidden = true;
-    $('#doc-channel').hidden = true;
     $('#doc-channel-picker').hidden = true;
+    $('#doc-toolbar').hidden = true;
     $('#doc-actions').hidden = true;
     return;
   }
@@ -1680,7 +1678,6 @@ function renderDocView(opts = {}) {
   const body = $('#doc-body');
   const editor = $('#doc-editor');
   const toolbar = $('#doc-editor-toolbar');
-  const channelChip = $('#doc-channel');
   const channelPicker = $('#doc-channel-picker');
   const meta = $('#doc-meta');
 
@@ -1696,12 +1693,10 @@ function renderDocView(opts = {}) {
     renderDocPreview(textarea.value);
     // Only show the channel picker for new docs (channel is fixed once created).
     if (row.id == null) {
-      channelChip.hidden = true;
       channelPicker.hidden = false;
       renderDocChannelSelect(row.channel_id);
     } else {
       channelPicker.hidden = true;
-      renderDocChannel(row.channel_id);
     }
   } else {
     titleEl.hidden = false;
@@ -1713,18 +1708,47 @@ function renderDocView(opts = {}) {
     editor.hidden = true;
     toolbar.hidden = true;
     channelPicker.hidden = true;
-    renderDocChannel(row.channel_id);
   }
 
+  // Meta line — mirrors renderThreadMeta layout:
+  //   [#channel · ] @creator · created_ts · [@editor · 编辑于 ts ·] #doc{id}
   meta.innerHTML = '';
   if (row.id == null) {
     meta.textContent = '新文档尚未发布';
   } else {
     const lastEditor = row.last_editor_pseudonym || row.created_pseudonym;
-    applyIdHue(meta, lastEditor);
-    const parts = [`创建者 @${row.created_pseudonym}`, fmtDate(row.created_at)];
-    if (row.updated_at) parts.push(`最近编辑 @${lastEditor} · ${fmtDate(row.updated_at)}`);
-    meta.textContent = parts.join(' · ');
+    const ch = channelById(row.channel_id);
+    if (ch) {
+      const chTag = el('button', {
+        type: 'button', className: 'ch-tag', textContent: '#' + ch.name,
+        title: ch.description || ch.name,
+      });
+      chTag.addEventListener('click', () => filterByChannel(ch.id));
+      meta.append(chTag, el('span', { className: 'sep', textContent: '·' }));
+    }
+    // Each pseudonym becomes its own chip with its own hue, so creator
+    // and last-editor render in distinct colors when they differ.
+    const creatorChip = pseudonymChip(row.created_pseudonym, row.created_pseudonym);
+    applyIdHue(creatorChip, row.created_pseudonym);
+    meta.append(
+      creatorChip,
+      el('span', { className: 'sep', textContent: '·' }),
+      el('span', { className: 'meta-ts', textContent: fmtDate(row.created_at) }),
+    );
+    if (row.updated_at) {
+      const editorChip = pseudonymChip(lastEditor, lastEditor);
+      applyIdHue(editorChip, lastEditor);
+      meta.append(
+        el('span', { className: 'sep', textContent: '·' }),
+        editorChip,
+        el('span', { className: 'meta-edited', textContent: '编辑于' }),
+        el('span', { className: 'meta-ts', textContent: fmtDate(row.updated_at) }),
+      );
+    }
+    meta.append(
+      el('span', { className: 'sep', textContent: '·' }),
+      el('span', { className: 'id-badge id-badge--doc', textContent: `#doc${row.id}` }),
+    );
   }
 
   renderDocActions(row);
@@ -1756,24 +1780,6 @@ function scheduleDocPreview() {
   }, 150);
 }
 
-function renderDocChannel(channelId) {
-  const box = $('#doc-channel');
-  if (!box) return;
-  box.innerHTML = '';
-  const ch = channelById(channelId);
-  if (!ch) { box.hidden = true; return; }
-  box.hidden = false;
-  const chip = el('button', {
-    type: 'button', className: 'channel-badge', textContent: ch.name,
-    title: ch.description || ch.name,
-  });
-  chip.addEventListener('click', () => {
-    setFeedMode('docs', { reload: false });
-    filterByChannel(ch.id);
-  });
-  box.appendChild(chip);
-}
-
 function renderDocActions(row) {
   const box = $('#doc-actions');
   box.innerHTML = '';
@@ -1795,12 +1801,13 @@ function renderDocActions(row) {
     }
     if (row.id != null) {
       const saved = savedDocIds.has(row.id);
-      const followBtn = el('button', {
-        type: 'button',
-        className: 'ghost small' + (saved ? ' is-saved' : ''),
-        textContent: saved ? '已关注' : '+ 关注',
+      const followBtn = makeStatPill({
+        emoji: saved ? '★' : '☆',
+        label: '收藏',
+        count: row.follow_count ?? 0,
+        active: saved,
+        onClick: () => toggleSavedDoc(row.id),
       });
-      followBtn.addEventListener('click', () => toggleSavedDoc(row.id));
       buttons.push(followBtn);
     }
     // Delete gate: creator (while token is live) OR admin. The server
@@ -1812,8 +1819,14 @@ function renderDocActions(row) {
       buttons.push(del);
     }
   }
-  if (!buttons.length) { box.hidden = true; return; }
+  const toolbar = $('#doc-toolbar');
+  if (!buttons.length) {
+    box.hidden = true;
+    if (toolbar) toolbar.hidden = true;
+    return;
+  }
   box.hidden = false;
+  if (toolbar) toolbar.hidden = false;
   box.append(...buttons);
 }
 
@@ -1983,6 +1996,50 @@ function insertAtCursor(textarea, text) {
   textarea.focus();
 }
 
+// Adds a "📎 图片" button + status span to a form's actions row and wires
+// it to /api/uploads + insertAtCursor — used by main/reply/edit comment
+// forms. Reuses the post composer's pathway so EXIF stripping and quota
+// behavior stay consistent.
+function attachImageUploadToForm(form) {
+  const ta = form.querySelector('textarea[name=content]');
+  const actions = form.querySelector('.form-actions');
+  if (!ta || !actions) return;
+  const errNode = form.querySelector('.err');
+  const btn = el('button', {
+    type: 'button', className: 'ghost small',
+    title: '插入图片（剥离 EXIF · WebP/PNG）',
+    textContent: '📎 图片',
+  });
+  const status = el('span', { className: 'muted upload-status' });
+  btn.addEventListener('click', () => {
+    if (!getToken() && !isAdmin) {
+      if (errNode) errNode.textContent = '请先获取发帖令牌。';
+      openDialog();
+      return;
+    }
+    const picker = el('input', {
+      type: 'file', accept: 'image/jpeg,image/png,image/webp', hidden: true,
+    });
+    document.body.appendChild(picker);
+    picker.addEventListener('change', async () => {
+      const file = picker.files && picker.files[0];
+      picker.remove();
+      if (!file) return;
+      status.textContent = '上传中…';
+      try {
+        const url = await uploadImage(file);
+        insertAtCursor(ta, `![](${url})\n`);
+        status.textContent = '已插入图片';
+      } catch (err) {
+        status.textContent = err.message;
+      }
+    });
+    picker.click();
+  });
+  actions.prepend(btn);
+  actions.append(status);
+}
+
 $('#post-image-btn').addEventListener('click', () => {
   const status = $('#post-image-status');
   status.textContent = '';
@@ -2052,7 +2109,7 @@ function renderPostCard(p) {
 
   // Title row: id-badge + title (kept to preserve markActivePost & search hit logic)
   const titleChildren = [
-    el('span', { className: 'id-badge', textContent: `#${p.id}` }),
+    el('span', { className: 'id-badge id-badge--post', textContent: `#post${p.id}` }),
     el('span', { className: 'post-title', textContent: p.title }),
   ];
   if (p.hit_in_comment && !p.hit_in_post) {
@@ -2430,10 +2487,10 @@ function renderThreadChannel(channelId) {
   box.appendChild(chip);
 }
 
-function renderThreadBack(ch) {
+function renderThreadBack() {
   const back = $('#thread-back');
   if (!back) return;
-  back.textContent = ch ? `← 返回 #${ch.name}` : '← 返回';
+  back.textContent = '← 返回';
 }
 
 function normalizedReactionCounts(counts) {
@@ -2453,7 +2510,7 @@ function renderThreadMeta(post, ch, deleted) {
     meta.append(
       el('span', { className: 'meta-ts', textContent: `已删除于 ${fmtDate(post.deleted_at)}` }),
       el('span', { className: 'sep', textContent: '·' }),
-      el('span', { className: 'id-badge', textContent: `#${post.id}` }),
+      el('span', { className: 'id-badge id-badge--post', textContent: `#post${post.id}` }),
     );
     return;
   }
@@ -2472,7 +2529,7 @@ function renderThreadMeta(post, ch, deleted) {
     pseudonymChip(post.pseudonym, post.author_key),
     ...metaTimeSuffix(post.created_at, post.edited_at),
     el('span', { className: 'sep', textContent: '·' }),
-    el('span', { className: 'id-badge', textContent: `#${post.id}` }),
+    el('span', { className: 'id-badge id-badge--post', textContent: `#post${post.id}` }),
   );
 }
 
@@ -2567,7 +2624,7 @@ async function openThread(id, { pushUrl = true } = {}) {
   currentPostCanDelete = !deleted && canDeleteAuthor(post.author_key);
   const ch = deleted ? null : channelById(post.channel_id);
 
-  renderThreadBack(ch);
+  renderThreadBack();
   $('#thread-title').innerHTML = '';
   $('#thread-title').textContent = deleted ? '[已删除]' : post.title;
   renderThreadMeta(post, ch, deleted);
@@ -2619,7 +2676,7 @@ function renderMissingThread(id, message) {
   currentFollowCount = 0;
   currentPostPseudonym = null;
   currentPostCanDelete = false;
-  renderThreadBack(null);
+  renderThreadBack();
   renderPoll(null);
   $('#thread-toolbar').hidden = true;
   $('#reactions').innerHTML = '';
@@ -2673,6 +2730,7 @@ function renderComment(c, depth) {
   const body = el('div', { className: 'comment-body' });
   body.appendChild(renderMarkdown(c.content));
   const actions = el('div', { className: 'comment-actions' });
+  for (const node of buildCommentReactionPills(c)) actions.appendChild(node);
   const replyBtn = el('button', { className: 'link-btn', type: 'button', textContent: '回复' });
   replyBtn.addEventListener('click', () => toggleReplyForm(node, c));
   actions.appendChild(replyBtn);
@@ -2694,7 +2752,7 @@ function renderComment(c, depth) {
   });
   const node = el('div', { className: 'comment' + (isAdminComment ? ' admin' : '') }, [
     avatar,
-    metaLine(c.pseudonym, c.created_at, c.edited_at),
+    metaLine(c.pseudonym, c.created_at, c.edited_at, c.author_key),
     body,
     actions,
   ]);
@@ -2703,6 +2761,64 @@ function renderComment(c, depth) {
   node.style.setProperty('--depth', d);
   if (d > 0) node.classList.add('nested');
   return node;
+}
+
+// Build the [👍 N] [👎 N] pill pair for a comment. Returns an array so the
+// caller can append them inline alongside reply/edit/delete buttons.
+// Reuses the post-reaction localStorage cache, prefixing keys with `c` so
+// post-id and comment-id namespaces don't collide.
+function buildCommentReactionPills(c) {
+  const t = getToken();
+  const mine = new Set(t ? (myReactionsFor(t.pseudonym)[`c${c.id}`] || []) : []);
+  const counts = c.reactions || {};
+  const out = [];
+  for (const kind of REACTION_KINDS) {
+    const count = counts[kind] || 0;
+    const isMine = mine.has(kind);
+    const btn = el('button', {
+      type: 'button',
+      className: 'link-btn comment-react' + (isMine ? ' is-mine' : ''),
+      title: REACTION_LABELS[kind] || kind,
+    });
+    btn.append(
+      el('span', { className: 'react-emoji', textContent: kind }),
+      el('span', {
+        className: 'react-count' + (count === 0 ? ' is-zero' : ''),
+        textContent: String(count),
+      }),
+    );
+    btn.addEventListener('click', () => toggleCommentReaction(c, kind));
+    out.push(btn);
+  }
+  return out;
+}
+
+async function toggleCommentReaction(c, kind) {
+  const t = getToken();
+  if (!t) { openDialog(); return; }
+  if (currentThread == null) return;
+  const cid = c.id;
+  const cacheKey = `c${cid}`;
+  const wasMine = (myReactionsFor(t.pseudonym)[cacheKey] || []).includes(kind);
+  try {
+    const r = await api('POST', `/api/posts/${currentThread}/comments/${cid}/reactions`, {
+      token: t.token, kind,
+    });
+    setMyReaction(t.pseudonym, cacheKey, kind, !wasMine);
+    c.reactions = normalizedReactionCounts(r.reactions);
+    const idx = currentComments.findIndex((x) => x.id === cid);
+    if (idx >= 0) currentComments[idx].reactions = c.reactions;
+    // Replace just the pill pair in-place; no need to re-render the body.
+    const node = $(`.comment[data-comment-id="${cid}"]`);
+    const actions = node && node.querySelector(':scope > .comment-actions');
+    if (actions) {
+      for (const old of [...actions.querySelectorAll(':scope > .comment-react')]) old.remove();
+      const first = actions.firstChild;
+      for (const btn of buildCommentReactionPills(c)) actions.insertBefore(btn, first);
+    }
+  } catch (err) {
+    if (/令牌/.test(err.message)) openDialog();
+  }
 }
 
 function toggleReplyForm(parentNode, parent) {
@@ -2735,6 +2851,7 @@ function buildReplyForm(parent) {
     err.textContent = '';
     await submitComment({ parentId: parent.id, content: ta.value, errNode: err, onDone: () => form.remove() });
   });
+  attachImageUploadToForm(form);
   return form;
 }
 
@@ -2752,6 +2869,7 @@ function startEditComment(commentNode, c) {
   const body = commentNode.querySelector(':scope > .comment-body');
   body.hidden = true;
   commentNode.insertBefore(form, body.nextSibling);
+  attachImageUploadToForm(form);
   cancel.addEventListener('click', () => {
     form.remove();
     body.hidden = false;
@@ -2772,7 +2890,7 @@ function startEditComment(commentNode, c) {
       body.innerHTML = '';
       body.appendChild(renderMarkdown(updated.content));
       const oldMeta = commentNode.querySelector(':scope > .meta');
-      const newMeta = metaLine(c.pseudonym, c.created_at, updated.edited_at);
+      const newMeta = metaLine(c.pseudonym, c.created_at, updated.edited_at, c.author_key);
       if (oldMeta) commentNode.replaceChild(newMeta, oldMeta);
       form.remove();
       body.hidden = false;
@@ -3055,9 +3173,16 @@ function renderTextWithMentions(text) {
         chip.addEventListener('click', (e) => { e.preventDefault(); jumpToPseudonym(target); });
         frag.appendChild(chip);
       }
+    } else if (m[2] === 'doc') {
+      const id = parseInt(m[3], 10);
+      const chip = el('a', { className: 'mention doc-ref', href: '#', textContent: `#doc${id}` });
+      chip.dataset.docId = String(id);
+      chip.addEventListener('click', (e) => { e.preventDefault(); openDoc(id).catch(() => {}); });
+      frag.appendChild(chip);
     } else {
-      const id = parseInt(m[2], 10);
-      const chip = el('a', { className: 'mention post-ref', href: '#', textContent: `#${id}` });
+      // m[2] === 'post' (canonical) or m[4] (legacy bare-number).
+      const id = parseInt(m[2] === 'post' ? m[3] : m[4], 10);
+      const chip = el('a', { className: 'mention post-ref', href: '#', textContent: `#post${id}` });
       chip.dataset.postId = String(id);
       chip.addEventListener('click', (e) => { e.preventDefault(); openThread(id).catch(() => {}); });
       frag.appendChild(chip);
@@ -3467,7 +3592,7 @@ function attachMentionAutocomplete(textarea) {
       items = feedPosts
         .filter((p) => !q || String(p.id).startsWith(q) || p.title.toLowerCase().includes(q))
         .slice(0, 6)
-        .map((p) => ({ value: `#${p.id}`, label: `#${p.id}`, sub: p.title }));
+        .map((p) => ({ value: `#post${p.id}`, label: `#post${p.id}`, sub: p.title }));
     }
     if (!items.length) { pop.hidden = true; return; }
     active = 0;
@@ -3530,6 +3655,7 @@ function attachMentionAutocomplete(textarea) {
 
 const mainCommentForm = $('#comment-form');
 attachMentionAutocomplete(mainCommentForm.querySelector('textarea'));
+attachImageUploadToForm(mainCommentForm);
 attachMentionAutocomplete($('#post-form').querySelector('input[name=title]'));
 attachMentionAutocomplete($('#post-form').querySelector('textarea'));
 

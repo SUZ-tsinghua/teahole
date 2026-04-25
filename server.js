@@ -331,6 +331,11 @@ const Q = {
   insertReaction:  db.prepare('INSERT INTO reactions (post_id, token_hash, kind, created_at) VALUES (?, ?, ?, ?)'),
   deleteReaction:  db.prepare('DELETE FROM reactions WHERE post_id = ? AND token_hash = ? AND kind = ?'),
   countReactions:  db.prepare('SELECT kind, COUNT(*) AS n FROM reactions WHERE post_id = ? GROUP BY kind'),
+  findCommentReaction:    db.prepare('SELECT 1 FROM comment_reactions WHERE comment_id = ? AND token_hash = ? AND kind = ?'),
+  insertCommentReaction:  db.prepare('INSERT INTO comment_reactions (comment_id, token_hash, kind, created_at) VALUES (?, ?, ?, ?)'),
+  deleteCommentReaction:  db.prepare('DELETE FROM comment_reactions WHERE comment_id = ? AND token_hash = ? AND kind = ?'),
+  countCommentReactions:  db.prepare('SELECT kind, COUNT(*) AS n FROM comment_reactions WHERE comment_id = ? GROUP BY kind'),
+  getCommentForReaction:  db.prepare('SELECT post_id FROM comments WHERE id = ?'),
   countCommentsForPost: db.prepare('SELECT COUNT(*) AS n FROM comments WHERE post_id = ?'),
   insertPoll:      db.prepare('INSERT INTO polls (post_id, question, created_at) VALUES (?, ?, ?)'),
   insertPollOption: db.prepare('INSERT INTO poll_options (poll_id, position, label) VALUES (?, ?, ?)'),
@@ -531,6 +536,7 @@ const Q = {
   insertSavedDoc:   db.prepare('INSERT OR IGNORE INTO saved_docs (user_id, doc_id, created_at) VALUES (?, ?, ?)'),
   deleteSavedDoc:   db.prepare('DELETE FROM saved_docs WHERE user_id = ? AND doc_id = ?'),
   listSavedDocIds:  db.prepare('SELECT doc_id FROM saved_docs WHERE user_id = ? ORDER BY created_at DESC'),
+  countSavedDocsForDoc: db.prepare('SELECT COUNT(*) AS n FROM saved_docs WHERE doc_id = ?'),
   listSavedDocs:    db.prepare(
     `SELECT d.id, d.channel_id, d.title, d.created_pseudonym, d.last_editor_pseudonym,
             d.created_at, d.updated_at
@@ -636,6 +642,45 @@ const toggleReactionTx = db.transaction((postId, tokenHash, kind) => {
     Q.insertReaction.run(postId, tokenHash, kind, Date.now());
   }
 });
+
+const toggleCommentReactionTx = db.transaction((commentId, tokenHash, kind) => {
+  if (Q.findCommentReaction.get(commentId, tokenHash, kind)) {
+    Q.deleteCommentReaction.run(commentId, tokenHash, kind);
+  } else {
+    Q.insertCommentReaction.run(commentId, tokenHash, kind, Date.now());
+  }
+});
+
+function commentReactionCountsFor(commentId) {
+  const out = Object.fromEntries(REACTION_KINDS.map((k) => [k, 0]));
+  for (const r of Q.countCommentReactions.all(commentId)) {
+    if (REACTION_KIND_SET.has(r.kind)) out[r.kind] = r.n;
+  }
+  return out;
+}
+
+// Mutates each comment row to add a `reactions` map. One batch query
+// instead of 1×N — cost is fixed regardless of comment count.
+function annotateCommentReactions(comments) {
+  if (!comments.length) return comments;
+  const ids = comments.map((c) => c.id);
+  const ph = ids.map(() => '?').join(',');
+  const rows = db.prepare(
+    `SELECT comment_id, kind, COUNT(*) AS n FROM comment_reactions
+       WHERE comment_id IN (${ph}) GROUP BY comment_id, kind`
+  ).all(...ids);
+  const byId = {};
+  for (const r of rows) {
+    if (!byId[r.comment_id]) byId[r.comment_id] = {};
+    if (REACTION_KIND_SET.has(r.kind)) byId[r.comment_id][r.kind] = r.n;
+  }
+  for (const c of comments) {
+    const out = Object.fromEntries(REACTION_KINDS.map((k) => [k, 0]));
+    Object.assign(out, byId[c.id] || {});
+    c.reactions = out;
+  }
+  return comments;
+}
 
 function parsePollInput(poll) {
   if (poll == null) return { ok: true, poll: null };
@@ -1126,7 +1171,7 @@ app.get('/api/posts/:id', requireSession, (req, res) => {
   const id = parseId(req, res); if (id == null) return;
   const post = Q.getPost.get(id);
   if (!post) return res.status(404).json({ error: '未找到' });
-  const comments = Q.listComments.all(id);
+  const comments = annotateCommentReactions(Q.listComments.all(id));
   const { token_hash, ...safePost } = post;
   res.json({
     post: safePost,
@@ -1149,6 +1194,28 @@ app.post('/api/posts/:id/reactions', requireSession, (req, res) => {
   }
   toggleReactionTx(id, resolved.tokenHash, kind);
   res.json({ reactions: reactionCountsFor(id) });
+});
+
+// Comment reactions — same shape as post reactions but keyed on comment_id.
+// The :pid param scopes the URL to a post for routing/auth consistency, and
+// we sanity-check that the comment belongs to the post and the post is alive.
+app.post('/api/posts/:pid/comments/:id/reactions', requireSession, (req, res) => {
+  const pid = parseInt(req.params.pid, 10);
+  const cid = parseInt(req.params.id, 10);
+  if (!Number.isInteger(pid) || pid <= 0 || !Number.isInteger(cid) || cid <= 0) {
+    return res.status(400).json({ error: '无效的 ID' });
+  }
+  const { token, kind } = req.body || {};
+  const resolved = resolveToken(token);
+  if (!resolved) return res.status(401).json({ error: '发帖令牌无效或已过期' });
+  if (!REACTION_KIND_SET.has(kind)) return res.status(400).json({ error: '不支持的表情' });
+  if (!Q.isPostAlive.get(pid)) {
+    return res.status(Q.postExists.get(pid) ? 410 : 404).json({ error: '帖子已删除或未找到' });
+  }
+  const c = Q.getCommentForReaction.get(cid);
+  if (!c || c.post_id !== pid) return res.status(404).json({ error: '评论不存在' });
+  toggleCommentReactionTx(cid, resolved.tokenHash, kind);
+  res.json({ reactions: commentReactionCountsFor(cid) });
 });
 
 // Vote once + locked in. A missing option_id means "tell me my state",
@@ -1207,6 +1274,7 @@ app.post('/api/posts/:id/comments', requireSession, (req, res) => {
       content: c,
       created_at: createdAt,
       edited_at: null,
+      reactions: Object.fromEntries(REACTION_KINDS.map((k) => [k, 0])),
     });
   } catch (err) {
     if (err.code === 'SQLITE_CONSTRAINT_FOREIGNKEY') {
@@ -1379,13 +1447,13 @@ app.post('/api/saved-docs/:id', requireSession, (req, res) => {
   const id = parseId(req, res); if (id == null) return;
   if (!Q.docExists.get(id)) return res.status(404).json({ error: '未找到' });
   Q.insertSavedDoc.run(req.user.uid, id, Date.now());
-  res.json({ ok: true, saved: true });
+  res.json({ ok: true, saved: true, follow_count: Q.countSavedDocsForDoc.get(id)?.n ?? 0 });
 });
 
 app.delete('/api/saved-docs/:id', requireSession, (req, res) => {
   const id = parseId(req, res); if (id == null) return;
   Q.deleteSavedDoc.run(req.user.uid, id);
-  res.json({ ok: true, saved: false });
+  res.json({ ok: true, saved: false, follow_count: Q.countSavedDocsForDoc.get(id)?.n ?? 0 });
 });
 
 // Followed threads: account-scoped reader state. POST both subscribes
@@ -1589,7 +1657,10 @@ app.get('/api/docs/:id', requireSession, (req, res) => {
   const id = parseId(req, res); if (id == null) return;
   const row = Q.getDoc.get(id);
   if (!row) return res.status(404).json({ error: '未找到' });
-  res.json(mapDocFull(row));
+  res.json({
+    ...mapDocFull(row),
+    follow_count: Q.countSavedDocsForDoc.get(id)?.n ?? 0,
+  });
 });
 
 app.post('/api/docs', requireSession, (req, res) => {

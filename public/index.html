@@ -205,7 +205,7 @@
 
       <form id="search-form" class="search-pod" role="search">
         <svg class="search-ico" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
-        <input id="search-input" name="q" type="search" placeholder="搜索（3 字以上 · 或 #帖子ID）" autocomplete="off">
+        <input id="search-input" name="q" type="search" placeholder="搜索（或 #帖子ID）" autocomplete="off">
         <button type="button" id="search-clear" class="icon-btn-bare" hidden aria-label="清除搜索" title="清除">✕</button>
       </form>
 
@@ -271,7 +271,6 @@
             </div>
             <span class="feed-sort">最新 ↓</span>
           </div>
-          <div id="filter-bar" class="filter-bar" hidden></div>
         </div>
         <div id="feed" class="feed feed-grid"></div>
         <div id="docs-feed" class="feed docs-feed" hidden></div>
@@ -310,16 +309,13 @@
 
       <article id="doc-view" class="reader-card" hidden>
         <button class="back" data-close="reader">← 返回</button>
-        <div class="doc-badge">共享文档</div>
+        <div id="doc-meta" class="meta"></div>
         <h2 id="doc-title" class="doc-title"></h2>
         <input id="doc-title-input" class="doc-title-input" type="text" maxlength="200" placeholder="标题（如：PhD 申请指南）" hidden>
-        <div id="doc-meta" class="meta"></div>
-        <div id="doc-channel" class="thread-channel" hidden></div>
         <label id="doc-channel-picker" class="field-row doc-channel-picker" hidden>
           <span class="field-label">频道</span>
           <select id="doc-channel-select"></select>
         </label>
-        <div id="doc-actions" class="thread-actions doc-actions" hidden></div>
         <div id="doc-body" class="prose"></div>
         <div id="doc-editor" class="doc-editor" hidden>
           <textarea id="doc-editor-input" placeholder="支持 Markdown、代码块、$LaTeX$ 公式…" maxlength="20000"></textarea>
@@ -329,6 +325,9 @@
           <button type="button" id="doc-image-btn" class="ghost small">📷 插入图片</button>
           <span id="doc-image-status" class="muted compose-hint"></span>
           <span class="muted doc-editor-hint">左侧编辑，右侧实时预览</span>
+        </div>
+        <div id="doc-toolbar" class="thread-toolbar" hidden>
+          <div id="doc-actions" class="thread-actions doc-actions"></div>
         </div>
         <div class="err" id="doc-err"></div>
       </article>
